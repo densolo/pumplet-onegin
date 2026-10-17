@@ -62,6 +62,9 @@ class CopyIntegrationTest {
         create table $s.ident (id int generated always as identity primary key, v text);
         create table $s.ser (id serial primary key, v text);
         create table $s.lob (id int primary key, data oid);
+        create sequence $s.global_seq;
+        create sequence $s.ahead_seq;
+        create sequence $s.secret_seq;
     """.trimIndent()
 
     private val sourceOnly = """
@@ -81,6 +84,12 @@ class CopyIntegrationTest {
         insert into $s.lob values (21, null);
         grant usage on schema $s to app_ro;
         grant select on all tables in schema $s to app_ro;
+        select setval('$s.ser_id_seq', 5000);
+        select setval('$s.global_seq', 12345);
+        select setval('$s.ahead_seq', 10);
+        select setval('$s.secret_seq', 777);
+        grant select on all sequences in schema $s to app_ro;
+        revoke select on sequence $s.secret_seq from app_ro;
         do ${'$'}${'$'} declare o oid; begin
             for o in select data from $s.lob where data is not null loop
                 execute format('grant select on large object %s to app_ro', o);
@@ -90,6 +99,7 @@ class CopyIntegrationTest {
     """.trimIndent()
 
     private val targetOnly = """
+        select setval('$s.ahead_seq', 99999);
         create table $s.gen (id int primary key, a int, b int generated always as (a * 2) stored);
         create table $s.wide (id int primary key, v varchar(50));
     """.trimIndent()
@@ -198,7 +208,8 @@ class CopyIntegrationTest {
         // Sequences follow the copied data; generated columns are computed by the target.
         dst("insert into $s.ident (v) values ('new'); insert into $s.ser (v) values ('new')")
         assertEquals(501, query(55433, "dst-pw", "select max(id) from $s.ident") { it.getInt(1) })
-        assertEquals(701, query(55433, "dst-pw", "select max(id) from $s.ser") { it.getInt(1) })
+        // The source's sequence is at 5000 (ahead of its 700 rows), so the target continues after it.
+        assertEquals(5001, query(55433, "dst-pw", "select max(id) from $s.ser") { it.getInt(1) })
         assertEquals(200, query(55433, "dst-pw", "select b from $s.gen where id = 100") { it.getInt(1) })
         assertEquals(SessionStatus.COMPLETED, StatusReader(cfg).read().history.firstOrNull()?.session?.status ?: StatusReader(cfg).read().detail!!.session.status)
     }
@@ -314,5 +325,37 @@ class CopyIntegrationTest {
         runBlocking { api.enable().events.collect() }
         assertEquals(checksums(55432, "src-admin-pw"), checksums(55433, "dst-pw"))
         assertTrue(api.status().detail!!.session.status == SessionStatus.COMPLETED)
+    }
+
+    private fun lastValue(seq: String): Long? =
+        query(55433, "dst-pw", "select last_value from pg_sequences where schemaname = '$s' and sequencename = '$seq'") { it.getLong(1).takeUnless { _ -> it.wasNull() } }
+
+    @Test
+    fun `sequences are raised to the source's values, never lowered`() {
+        val cfg = config()
+        val events = mutableListOf<Event>()
+        val r = SessionManager(cfg).begin("run").use { session -> RunStage(cfg, EventSink { events += it }).run(session).also { session.succeed() } }
+
+        assertEquals(5000, lastValue("ser_id_seq"), "the source's sequence was ahead of its data")
+        assertEquals(12345, lastValue("global_seq"), "a sequence no column owns")
+        assertEquals(99999, lastValue("ahead_seq"), "the target was ahead: kept")
+        assertEquals(null, lastValue("secret_seq"), "unreadable on the source: left alone")
+        assertEquals(500, lastValue("ident_id_seq"), "identity: the source's value equals its data")
+        val seq = r.copy.sequences!!
+        assertEquals(setOf("$s.ser_id_seq", "$s.global_seq"), seq.raised.keys)
+        assertTrue("$s.ahead_seq" in seq.kept)
+        assertTrue(events.any { it is Event.Warning && it.message.contains("can't read 1 source sequence(s) ($s.secret_seq)") && it.message.contains("grant select on all sequences in schema") }, events.toString())
+        dst("insert into $s.ser (v) values ('new')")
+        assertEquals(5001, query(55433, "dst-pw", "select max(id) from $s.ser") { it.getInt(1) })
+    }
+
+    @Test
+    fun `with raiseToSource off, sequences only follow the copied data`() {
+        val cfg = config("sequences:\n  raiseToSource: false\n")
+        val r = SessionManager(cfg).begin("run").use { session -> RunStage(cfg).run(session).also { session.succeed() } }
+        assertEquals(null, r.copy.sequences)
+        assertEquals(700, lastValue("ser_id_seq"))
+        assertEquals(null, lastValue("global_seq"))
+        assertEquals(99999, lastValue("ahead_seq"))
     }
 }

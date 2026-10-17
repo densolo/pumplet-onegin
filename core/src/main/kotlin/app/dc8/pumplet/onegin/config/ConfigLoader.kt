@@ -53,6 +53,7 @@ class ConfigLoader(
                 c.bool("disableUserTriggers", true),
             ).also { c.finish() }
         }
+        val sequences = r.obj("sequences")?.let { q -> SequencesConfig(q.bool("raiseToSource", true)).also { q.finish() } }
         val diff = r.obj("diff")?.let { d -> DiffConfig(d.bool("allowTypeDifferences", false)).also { d.finish() } }
         // null = default: resolved below, once the source schemas are known to be valid.
         val stateTable = r.obj("state")?.let { st ->
@@ -98,6 +99,7 @@ class ConfigLoader(
             target = target!!.copy(password = resolved["target.password"]),
             tables = tables!!, threads = threads!!, chunking = chunking!!, buffer = buffer!!, constraints = constraints!!,
             diff = diff!!,
+            sequences = sequences!!,
             state = stateTable?.let { StateConfig(it) } ?: StateConfig.default(source!!.schemas),
             redactor = Redactor(secrets.values),
         )

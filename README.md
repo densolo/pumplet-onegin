@@ -37,8 +37,8 @@ You can also run `app.dc8.pumplet.onegin.ui.MainKt` from IntelliJ IDEA.
   CLI loads a job. Nothing connects to a database until you press a button.
 - **Layout:** the profile list is on the left. On the right, under the command toolbar, the **Profile** tab has the form and the **Output** tab shows command output. Starting a command switches to Output.
 - **Editing:** a form holds the connections (passwords masked), the schemas and the
-  include/exclude filters. Tuning, the load options and the state table are under *Advanced
-  settings*. When any of them differ from the defaults, the link says which. *Save* writes both files and shows any problems.
+  include/exclude filters. Tuning, the load options, *Raise sequences* and the state table are
+  under *Advanced settings*. When any of them differ from the defaults, the link says which. *Save* writes both files and shows any problems.
   *Duplicate* and *Delete* are next to it.
 - **Commands:** *Check connection*, *Status*, *Diff*, *Run* and *Fetch test* are on the toolbar.
   *Validate*, *Disable*, *Copy*, *Enable*, *Enable, skip pending*, *Recover* and *Status (all
@@ -372,8 +372,17 @@ file), it prints a line as each table finishes and a summary line every 10 secon
   - a failed chunk is retried up to 3 times
   - a table whose chunk keeps failing is marked FAILED, and the other tables carry on
   - the run then fails with a summary, and the next `copy` retries only what is missing
-- **After each table:** sequences owned by its columns (serial and identity) are set to the
-  copied maximum, and the table is `ANALYZE`d.
+- **After each table:** sequences owned by its columns (serial and identity) are moved past the
+  copied maximum, never back, and the table is `ANALYZE`d.
+- **Sequences after the copy** (`sequences.raiseToSource`, on by default): every sequence in the
+  copied schemas that exists on both sides is raised to the source's value when the target is
+  behind. That includes sequences no column owns. A target sequence that is already ahead stays
+  as it is. This keeps local inserts from reusing ids the source has already handed out, for
+  example after rows were deleted on the source. The source value is *read*
+  (`pg_sequences.last_value`), never taken with `nextval()`, so the source isn't changed. Reading
+  needs `SELECT` on the source sequences, which `grant select on all tables` doesn't cover. When
+  a sequence can't be read, the copy warns and prints the `grant select on all sequences in
+  schema …` statement.
 - **Columns:** a table gets the columns both sides have. Columns generated on the target are left
   for the target to compute. Identity values are copied as they are, `GENERATED ALWAYS`
   included.
@@ -508,6 +517,9 @@ constraints:
 diff:
   allowTypeDifferences: false  # true: copy columns of different types as text instead of blocking
 
+sequences:
+  raiseToSource: true      # after the copy, raise target sequences that are behind the source
+
 state:
   table: app.pumplet_onegin_state  # where session state is kept on the target;
                                    # default: <first source schema>.pumplet_onegin_state
@@ -529,7 +541,7 @@ error: invalid configuration
   - bad.yaml: source.password: plain-text passwords are not allowed in the job file; move it to the secrets file and reference it as ${secret:<name>}
   - bad.yaml: source.schemas: list at least one schema to copy
   - bad.yaml: source.schema: unknown key (did you mean 'schemas'?); allowed: url, user, password, schemas
-  - bad.yaml: threds: unknown key (did you mean 'threads'?); allowed: secrets, source, target, tables, threads, chunking, buffer, constraints, diff, state
+  - bad.yaml: threds: unknown key (did you mean 'threads'?); allowed: secrets, source, target, tables, threads, chunking, buffer, constraints, sequences, diff, state
 ```
 
 ### Secrets file

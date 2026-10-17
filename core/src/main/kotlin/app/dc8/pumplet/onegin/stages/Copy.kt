@@ -7,11 +7,14 @@ import app.dc8.pumplet.onegin.copy.CopyEngine
 import app.dc8.pumplet.onegin.copy.DiscardSink
 import app.dc8.pumplet.onegin.copy.EngineResult
 import app.dc8.pumplet.onegin.copy.RowTransformer
+import app.dc8.pumplet.onegin.copy.SequenceSyncResult
+import app.dc8.pumplet.onegin.copy.Sequences
 import app.dc8.pumplet.onegin.copy.TableJob
 import app.dc8.pumplet.onegin.copy.TableOutcome
 import app.dc8.pumplet.onegin.copy.TargetSink
 import app.dc8.pumplet.onegin.db.Db
 import app.dc8.pumplet.onegin.db.Role
+import app.dc8.pumplet.onegin.db.Sql
 import app.dc8.pumplet.onegin.schema.CatalogReader
 import app.dc8.pumplet.onegin.schema.ColumnPlan
 import app.dc8.pumplet.onegin.schema.DiffReport
@@ -61,7 +64,8 @@ class CopyStage(
     private val cancel: AtomicBoolean = AtomicBoolean(),
     private val transformer: RowTransformer = RowTransformer.NONE,
 ) {
-    data class Result(val engine: EngineResult, val report: RunReport)
+    /** [sequences] is null when the option is off or the copy didn't finish. */
+    data class Result(val engine: EngineResult, val report: RunReport, val sequences: SequenceSyncResult? = null)
 
     /** @param diff a diff already made in this run (by `run`); otherwise the diff stage runs first. */
     fun run(session: ActiveSession, diff: DiffReport? = null): Result {
@@ -116,7 +120,10 @@ class CopyStage(
                         durationMs = engine.durationMs,
                     )
                     session.put(Kind.REPORT, "", runReport)
-                    return Result(engine, runReport)
+                    val sequences = if (config.sequences.raiseToSource && engine.failed.isEmpty() && !engine.cancelled) {
+                        targetPool.connection.use { syncSequences(snap.connection, it) }
+                    } else null
+                    return Result(engine, runReport, sequences)
                 }
             }
         }
@@ -141,6 +148,23 @@ class CopyStage(
             val doneHere = done[plan.table].orEmpty().associateBy { it.index }
             TableJob(plan, chunks, doneHere, truncateFirst = resuming && plan.primaryKey.isEmpty() && doneHere.isEmpty())
         }
+    }
+
+    /** Raises target sequences that are behind the source (never lowers them), and reports what it did. */
+    private fun syncSequences(source: Connection, target: Connection): SequenceSyncResult {
+        target.autoCommit = true
+        val r = Sequences.raiseToSource(source, target, config.source.schemas)
+        r.raised.forEach { (name, v) -> events.emit(Event.Info("  sequence $name raised to ${v.second} (was ${v.first ?: "unused"})")) }
+        val unreadable = r.skipped.filterValues { it.startsWith("no SELECT") }.keys
+        if (unreadable.isNotEmpty()) {
+            val schemas = unreadable.map { it.substringBefore('.') }.distinct()
+            events.emit(Event.Warning(
+                "can't read ${unreadable.size} source sequence(s) (${unreadable.joinToString(", ")}), so they weren't raised; " +
+                    "the source user needs: " + schemas.joinToString(" ") { "grant select on all sequences in schema ${Sql.ident(it)} to <user>;" }
+            ))
+        }
+        events.emit(Event.Info("sequences: ${r.summary}"))
+        return r
     }
 
     /** Keeps the table rows of the state current (RUNNING / FAILED) as the engine reports progress. */
@@ -184,7 +208,7 @@ class CopyStage(
         val done = r.engine.tables.count { it.outcome == TableOutcome.DONE }
         return "$done of ${r.engine.tables.size} table(s) done, %,d rows, %.1f MB in this run".format(
             r.report.totalRows, r.report.totalBytes / 1024.0 / 1024.0,
-        )
+        ) + (r.sequences?.let { "; ${it.raised.size} sequence(s) raised" } ?: "")
     }
 }
 

@@ -151,6 +151,10 @@ All of the above is implemented. Notes on how:
 - Tests: Testcontainers 2.0.5 (two postgres:17 containers) + Liquibase 4.33.0 (Apache 2.0; 5.x is FSL) changelog in `cli/src/test/resources/e2e/changelog.sql`; the kill scenario kills a real child JVM with `kill -9`. The docker-compose `test-env/` stays for manual runs and the remaining integration tests.
 - Not done: schema mapping (target schema with another name than the source).
 
+## Sequences (added later)
+- After each table, owned sequences are moved past the copied max, never lowered.
+- `sequences.raiseToSource` (default true, not in the config hash; "Raise sequences" checkbox in the UI): after a successful copy, every sequence of the copied schemas present on both sides is raised to the source's `pg_sequences.last_value` when the target is behind; a target ahead is kept. The source value is read, not taken with nextval() (which would write to the read-only source and burn ids). Unreadable source sequences are skipped with a warning that prints the GRANT.
+
 ## Desktop UI (added later)
 - Module `ui`: Compose for Desktop 1.12.2 (Material), built with Maven: Compose compiler via `-Xplugin` (embeddable plugin jar), `-desktop` artifacts named explicitly, Google Maven repo for AndroidX, AndroidX compose runtime pinned to 1.12.1. Runs as a plain Java app (shaded jar with the macOS arm64 skiko runtime; `-Dskiko.platform` for others); no native packaging.
 - Profiles: `~/.config/pumplet-onegin/profiles/<name>/{job.yaml, secrets.yaml}` (dir 700, secrets 600; `PUMPLET_ONEGIN_HOME` overrides). A profile is an ordinary job, usable from the CLI. Edited with a form; validated offline with ConfigLoader on start and on save; nothing connects until a button is pressed.

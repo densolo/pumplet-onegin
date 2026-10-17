@@ -35,6 +35,7 @@ data class Profile(
     val dropSecondaryIndexes: Boolean = false,
     val disableUserTriggers: Boolean = true,
     val allowTypeDifferences: Boolean = false,
+    val raiseSequences: Boolean = true,
     /** Empty = the default, `<first schema>.pumplet_onegin_state`. */
     val stateTable: String = "",
 )
@@ -52,6 +53,7 @@ fun Profile.customisedAdvanced(): List<String> {
         "drop secondary indexes".takeIf { dropSecondaryIndexes != d.dropSecondaryIndexes },
         "disable user triggers".takeIf { disableUserTriggers != d.disableUserTriggers },
         "allow type differences".takeIf { allowTypeDifferences != d.allowTypeDifferences },
+        "raise sequences".takeIf { raiseSequences != d.raiseSequences },
         "state table".takeIf { stateTable != d.stateTable },
     )
 }
@@ -116,6 +118,7 @@ class ProfileStore(val root: Path = defaultRoot()) {
             dropSecondaryIndexes = constraints.flag("dropSecondaryIndexes", d.dropSecondaryIndexes),
             disableUserTriggers = constraints.flag("disableUserTriggers", d.disableUserTriggers),
             allowTypeDifferences = section("diff").flag("allowTypeDifferences", false),
+            raiseSequences = section("sequences").flag("raiseToSource", d.raiseSequences),
             stateTable = section("state").str("table"),
         )
     }
@@ -187,6 +190,8 @@ class ProfileStore(val root: Path = defaultRoot()) {
         appendLine("  disableUserTriggers: ${p.disableUserTriggers}")
         appendLine("diff:")
         appendLine("  allowTypeDifferences: ${p.allowTypeDifferences}")
+        appendLine("sequences:")
+        appendLine("  raiseToSource: ${p.raiseSequences}")
         if (p.stateTable.isNotBlank()) {
             appendLine("state:")
             appendLine("  table: ${q(p.stateTable)}")

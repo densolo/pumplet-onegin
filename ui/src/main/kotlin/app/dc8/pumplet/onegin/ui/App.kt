@@ -277,6 +277,9 @@ private fun ProfileForm(state: AppState, p: Profile, modifier: Modifier) {
                 CheckRow("Disable user triggers", p.disableUserTriggers, "so triggers don't fire for copied rows") { v -> update { it.copy(disableUserTriggers = v) } }
 
                 Section("Other")
+                CheckRow("Raise sequences", p.raiseSequences, "to the source's values if lower, so local inserts don't reuse source ids") { v ->
+                    update { it.copy(raiseSequences = v) }
+                }
                 CheckRow("Allow type differences", p.allowTypeDifferences, "copy differing columns as text instead of blocking") { v ->
                     update { it.copy(allowTypeDifferences = v) }
                 }

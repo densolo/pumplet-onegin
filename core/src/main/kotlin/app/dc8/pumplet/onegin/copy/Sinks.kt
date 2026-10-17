@@ -123,7 +123,7 @@ class TargetSink(
         return n
     }
 
-    /** Resets sequences owned by the table's columns to its data, analyzes it, and records it DONE. */
+    /** Moves sequences owned by the table's columns past its data (never back), analyzes it, and records it DONE. */
     override fun tableDone(job: TableJob) {
         pool.connection.use { c ->
             c.autoCommit = true
@@ -139,9 +139,12 @@ class TargetSink(
                 ps.executeQuery().use { rs -> buildList { while (rs.next()) rs.getString(2)?.let { add(rs.getString(1) to it) } } }
             }
             for ((col, seq) in owned) {
-                c.prepareStatement(
-                    "select setval(cast(? as regclass), m, true) from (select max(${Sql.ident(col)}) m from ${Sql.table(job.table)}) x where m is not null"
-                ).use { ps -> ps.setString(1, seq); ps.executeQuery().close() }
+                val max = c.createStatement().use { st ->
+                    st.executeQuery("select max(${Sql.ident(col)})::bigint from ${Sql.table(job.table)}").use { rs ->
+                        rs.next(); rs.getLong(1).takeUnless { rs.wasNull() }
+                    }
+                } ?: continue
+                Sequences.raise(c, seq, max)
             }
             c.createStatement().use { it.execute("analyze ${Sql.table(job.table)}") }
             val chunks = store.list(c, session, Kind.CHUNK, ChunkDone::class.java).filter { it.table == job.table }

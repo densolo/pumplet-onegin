@@ -64,6 +64,14 @@ data class DiffConfig(
     val allowTypeDifferences: Boolean,
 )
 
+data class SequencesConfig(
+    /**
+     * After the copy, raise target sequences that are behind their source counterparts
+     * (never lower them), so local inserts don't reuse ids the source already handed out.
+     */
+    val raiseToSource: Boolean = true,
+)
+
 /** Where session state lives on the target. */
 data class StateConfig(val table: TableName) {
     companion object {
@@ -85,13 +93,14 @@ data class JobConfig(
     val buffer: BufferConfig,
     val constraints: ConstraintsConfig,
     val diff: DiffConfig = DiffConfig(allowTypeDifferences = false),
+    val sequences: SequencesConfig = SequencesConfig(),
     val state: StateConfig,
     /** Scrubs every value from the secrets file; use on anything that may reach output. */
     val redactor: Redactor,
 ) {
     /**
      * Identifies the job for session matching. Excludes passwords, the secrets
-     * file location and the state table location, so rotating a password or running with `--secrets` on another
+     * file location, the state table location and the sequences option, so rotating a password or running with `--secrets` on another
      * machine doesn't break resume.
      */
     fun configHash(): String {
@@ -121,5 +130,5 @@ data class JobConfig(
     override fun toString(): String =
         "JobConfig(jobFile=$jobFile, source=${source.copy(url = Redactor.safeJdbcUrl(source.url))}, " +
             "target=${target.copy(url = Redactor.safeJdbcUrl(target.url))}, tables=$tables, threads=$threads, " +
-            "chunking=$chunking, buffer=$buffer, constraints=$constraints, diff=$diff, state=$state)"
+            "chunking=$chunking, buffer=$buffer, constraints=$constraints, diff=$diff, sequences=$sequences, state=$state)"
 }
