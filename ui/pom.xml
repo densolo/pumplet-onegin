@@ -7,7 +7,7 @@
     <parent>
         <groupId>app.dc8.pumplet.onegin</groupId>
         <artifactId>pumplet-onegin-parent</artifactId>
-        <version>1.0-SNAPSHOT</version>
+        <version>1.1-SNAPSHOT</version>
     </parent>
 
     <!--
@@ -25,14 +25,13 @@
         <skiko.platform>macos-arm64</skiko.platform>
         <androidx.compose.version>1.12.1</androidx.compose.version>
         <!--
-          The Compose compiler plugin jar for -Xplugin, in the default local repository (the provided
-          dependencies below make sure it's downloaded there). Built from ${user.home} because
-          IntelliJ's Maven import resolves system properties but not ${settings.localRepository}.
-          Maven's Kotlin compiler is the embeddable one, so it needs the -embeddable plugin; IntelliJ's
-          build uses the plain compiler and plugin (see the "intellij" profile).
-          With a non-default local repository, override it: -Dcompose.compiler.plugin.jar=<path>.
+          The Compose compiler plugin jar for -Xplugin: a fixed path inside the project, where
+          maven-dependency-plugin:copy (below) puts it, so it doesn't depend on where a machine keeps its
+          local repository. Maven's kotlinc is the embeddable compiler and needs the embeddable plugin;
+          IntelliJ's build uses the regular compiler and gets the regular plugin through the
+          "intellij" profile below. (Same setup as mac-one-copy.)
         -->
-        <compose.compiler.plugin.jar>${user.home}/.m2/repository/org/jetbrains/kotlin/kotlin-compose-compiler-plugin-embeddable/${kotlin.version}/kotlin-compose-compiler-plugin-embeddable-${kotlin.version}.jar</compose.compiler.plugin.jar>
+        <compose.compiler.plugin.jar>${project.build.directory}/compose-compiler/kotlin-compose-compiler-plugin-embeddable.jar</compose.compiler.plugin.jar>
     </properties>
 
     <repositories>
@@ -113,20 +112,6 @@
             <artifactId>skiko-awt-runtime-${skiko.platform}</artifactId>
             <version>${skiko.version}</version>
         </dependency>
-        <!-- Only so the Compose compiler plugin jars are in the local repository for -Xplugin (see properties). -->
-        <dependency>
-            <groupId>org.jetbrains.kotlin</groupId>
-            <artifactId>kotlin-compose-compiler-plugin-embeddable</artifactId>
-            <version>${kotlin.version}</version>
-            <scope>provided</scope>
-        </dependency>
-        <dependency>
-            <!-- The same plugin built for the plain (non-embeddable) compiler, for IntelliJ's build. -->
-            <groupId>org.jetbrains.kotlin</groupId>
-            <artifactId>kotlin-compose-compiler-plugin</artifactId>
-            <version>${kotlin.version}</version>
-            <scope>provided</scope>
-        </dependency>
 
         <dependency>
             <groupId>org.jetbrains.kotlin</groupId>
@@ -187,6 +172,38 @@
                 </configuration>
             </plugin>
             <plugin>
+                <!-- Copies both builds of the Compose compiler plugin to target/compose-compiler (see compose.compiler.plugin.jar). -->
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <version>3.8.1</version>
+                <executions>
+                    <execution>
+                        <id>compose-compiler</id>
+                        <phase>initialize</phase>
+                        <goals>
+                            <goal>copy</goal>
+                        </goals>
+                        <configuration>
+                            <artifactItems>
+                                <artifactItem>
+                                    <groupId>org.jetbrains.kotlin</groupId>
+                                    <artifactId>kotlin-compose-compiler-plugin-embeddable</artifactId>
+                                    <version>${kotlin.version}</version>
+                                    <destFileName>kotlin-compose-compiler-plugin-embeddable.jar</destFileName>
+                                </artifactItem>
+                                <artifactItem>
+                                    <groupId>org.jetbrains.kotlin</groupId>
+                                    <artifactId>kotlin-compose-compiler-plugin</artifactId>
+                                    <version>${kotlin.version}</version>
+                                    <destFileName>kotlin-compose-compiler-plugin.jar</destFileName>
+                                </artifactItem>
+                            </artifactItems>
+                            <outputDirectory>${project.build.directory}/compose-compiler</outputDirectory>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
                 <groupId>org.jetbrains.kotlin</groupId>
                 <artifactId>kotlin-maven-plugin</artifactId>
                 <configuration>
@@ -201,8 +218,11 @@
     <profiles>
         <profile>
             <!--
-              Active only while IntelliJ IDEA imports the project (it sets idea.maven.embedder.version):
-              IntelliJ compiles with the plain Kotlin compiler, which needs the plain Compose plugin.
+              Active only while IntelliJ IDEA imports the project (it sets idea.maven.embedder.version).
+              IntelliJ compiles with the plain Kotlin compiler, which needs the plain Compose plugin, and
+              doesn't run maven-dependency-plugin, so the path is spelled out. It assumes the default
+              local repository (~/.m2/repository); IntelliJ resolves ${user.home} but not
+              ${settings.localRepository}. With another local repository, change it here.
             -->
             <id>intellij</id>
             <activation>

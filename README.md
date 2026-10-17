@@ -760,8 +760,10 @@ The project has three Maven modules:
 Building Compose with Maven (normally done with Gradle) needs three things, all set in
 `ui/pom.xml`:
 
-- The Compose compiler is loaded with `-Xplugin=` from
-  `kotlin-compose-compiler-plugin-embeddable`, matching the Kotlin version.
+- The Compose compiler is loaded with `-Xplugin=`. `maven-dependency-plugin` copies the plugin
+  jars to `ui/target/compose-compiler/` first, so the path doesn't depend on where a machine keeps
+  its local repository. Maven uses the `-embeddable` build. IntelliJ's own build needs the plain
+  one, and gets it through the `intellij` profile, which is active only during IntelliJ's import.
 - The `-desktop` artifacts are named directly, and Google's Maven repository is added for the
   AndroidX libraries.
 - The AndroidX Compose runtime versions are pinned, because Maven can't reconcile their

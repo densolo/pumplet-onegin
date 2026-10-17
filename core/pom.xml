@@ -7,7 +7,7 @@
     <parent>
         <groupId>app.dc8.pumplet.onegin</groupId>
         <artifactId>pumplet-onegin-parent</artifactId>
-        <version>1.0-SNAPSHOT</version>
+        <version>1.1-SNAPSHOT</version>
     </parent>
 
     <!-- The engine: config, database access, stages. No CLI or terminal dependencies. -->
