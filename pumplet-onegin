@@ -1,0 +1,3 @@
+#!/bin/sh
+# Runs the CLI from the shaded jar (build it with: mvn package).
+exec java -jar "$(dirname "$0")/cli/target/pumplet-onegin.jar" "$@"

@@ -1,0 +1,26 @@
+# Job for the docker test environment (test-env/docker-compose.yml).
+secrets: local.secrets.yaml
+source:
+  url: jdbc:postgresql://localhost:55432/app
+  user: app_ro
+  password: ${secret:src}
+  schemas: [app]
+target:
+  url: jdbc:postgresql://localhost:55433/app
+  user: postgres
+  password: ${secret:dst}
+tables:
+  include: []
+  exclude: [app.audit_*]
+threads:
+  readers: 10
+  writers: 4
+chunking:
+  rowsPerChunk: 200000
+  minRowsToSplit: 500000
+buffer:
+  maxMemoryMb: 1024
+constraints:
+  dropForeignKeys: true
+  dropSecondaryIndexes: false
+  disableUserTriggers: true
