@@ -16,6 +16,41 @@ The usual way to use it:
 ./pumplet-onegin status --config job.yaml   # how did it go (any time, from anywhere)
 ```
 
+## Desktop UI
+
+There's also a small desktop app (Compose for Desktop) for keeping job profiles and running
+commands without a terminal:
+
+```sh
+mvn -pl ui -am package -DskipTests
+java -jar ui/target/pumplet-onegin-ui.jar
+```
+
+You can also run `app.dc8.pumplet.onegin.ui.MainKt` from IntelliJ IDEA.
+
+- **Profiles:** each profile is a folder under `~/.config/pumplet-onegin/profiles/<name>/` (or
+  under `$PUMPLET_ONEGIN_HOME/profiles`). It holds a normal `job.yaml` and a `secrets.yaml` with
+  the passwords. The folder is mode 700 and the secrets file is mode 600. Each job's log and
+  diff report end up in the same folder. Any profile also works from a shell:
+  `pumplet-onegin run --config ~/.config/pumplet-onegin/profiles/<name>/job.yaml`.
+- **On start:** the app lists the profiles and validates each one *offline*, the same way the
+  CLI loads a job. Nothing connects to a database until you press a button.
+- **Layout:** the profile list is on the left. On the right, under the command toolbar, the **Profile** tab has the form and the **Output** tab shows command output. Starting a command switches to Output.
+- **Editing:** a form holds the connections (passwords masked), the schemas and the
+  include/exclude filters. Tuning, the load options and the state table are under *Advanced
+  settings*. When any of them differ from the defaults, the link says which. *Save* writes both files and shows any problems.
+  *Duplicate* and *Delete* are next to it.
+- **Commands:** *Check connection*, *Status*, *Diff*, *Run* and *Fetch test* are on the toolbar.
+  *Validate*, *Disable*, *Copy*, *Enable*, *Enable, skip pending*, *Recover* and *Status (all
+  jobs)* are under *More*. Commands that write to the target ask first and name the target URL.
+  Commands run the real CLI in-process on a background thread, and the output pane shows exactly
+  what the terminal would. A copy prints a progress line every 2 seconds. *Stop* works like
+  Ctrl-C: in-flight chunks roll back, and running the command again resumes. One command runs at
+  a time.
+
+The jar bundles the Skia runtime for macOS on Apple Silicon. On another machine, build it with
+`-Dskiko.platform=macos-x64`, `linux-x64` or `windows-x64`.
+
 ## Requirements
 
 - JDK 21+
@@ -359,9 +394,10 @@ same command again to continue.
 #### Starting over a non-empty target
 
 A new session never writes into tables that already have rows: `disable`, `copy` and `run`
-refuse and list them. Set `truncateTargets: true` to let a new session empty exactly those
-tables first. It prints which tables it truncates. This setting doesn't affect a session that
-is resuming its own copy.
+refuse and list them. The tool never empties target tables itself. If starting over is what you
+want, empty them yourself; the error message gives the statement, for example
+`truncate "app"."orders", "app"."order_items";`. A session that is resuming its own copy isn't
+affected, because rows its copy committed are expected.
 
 ### `fetch-test`
 
@@ -464,8 +500,6 @@ chunking:
 buffer:
   maxMemoryMb: 1024        # in-memory buffer between readers and writers
 
-truncateTargets: false     # true: a new session empties non-empty target tables instead of refusing
-
 constraints:
   dropForeignKeys: true        # drop FKs on the target during the load
   dropSecondaryIndexes: false  # drop non-PK/unique indexes during the load
@@ -495,7 +529,7 @@ error: invalid configuration
   - bad.yaml: source.password: plain-text passwords are not allowed in the job file; move it to the secrets file and reference it as ${secret:<name>}
   - bad.yaml: source.schemas: list at least one schema to copy
   - bad.yaml: source.schema: unknown key (did you mean 'schemas'?); allowed: url, user, password, schemas
-  - bad.yaml: threds: unknown key (did you mean 'threads'?); allowed: secrets, source, target, tables, threads, chunking, buffer, constraints, truncateTargets, diff, state
+  - bad.yaml: threds: unknown key (did you mean 'threads'?); allowed: secrets, source, target, tables, threads, chunking, buffer, constraints, diff, state
 ```
 
 ### Secrets file
@@ -703,11 +737,23 @@ docker compose -f test-env/docker-compose.yml up -d --wait
 
 ## Development
 
-The project has two Maven modules:
+The project has three Maven modules:
 
 - `core`: the engine (config, database access, stages). It has no CLI or terminal
   dependencies, so another front end can be built on it.
 - `cli`: the Clikt command line, packaged as `cli/target/pumplet-onegin.jar`.
+- `ui`: the Compose for Desktop app, packaged as `ui/target/pumplet-onegin-ui.jar`. It runs
+  CLI commands in-process.
+
+Building Compose with Maven (normally done with Gradle) needs three things, all set in
+`ui/pom.xml`:
+
+- The Compose compiler is loaded with `-Xplugin=` from
+  `kotlin-compose-compiler-plugin-embeddable`, matching the Kotlin version.
+- The `-desktop` artifacts are named directly, and Google's Maven repository is added for the
+  AndroidX libraries.
+- The AndroidX Compose runtime versions are pinned, because Maven can't reconcile their
+  exact-version ranges the way Gradle does.
 
 ### Library API
 

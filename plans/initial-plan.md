@@ -88,7 +88,7 @@ Rules:
 
 ## Protection against overwriting data
 - Before `disable`/`copy`: if any selected target table already has rows, refuse to start, unless an unfinished session with the same config hash exists, in which case resume it.
-- Starting a new session over a non-empty target is only possible with an explicit config option `truncateTargets: true`, and the tool prints exactly which tables it will truncate.
+- Starting a new session over a non-empty target is never automatic: the tool refuses and prints the TRUNCATE statement for the user to run themselves. (A `truncateTargets` option existed briefly and was removed on purpose.)
 - Refuse to start a new session while another session's constraints are still dropped; point to `enable`/`recover`.
 
 ## Diff
@@ -109,7 +109,7 @@ Compare the selected tables in both databases and print a readable report (also 
 - Use `COPY (SELECT cols FROM t WHERE range) TO STDOUT` on the source and `COPY t (cols) FROM STDIN` on the target (pgjdbc CopyManager), with binary format where possible.
 - LOBs: tables with `oid` columns referencing large objects (`pg_largeobject`) go through a row-level path: read each LO from the source via LargeObjectManager, create it on the target with the same OID (`lo_create(oid)`), then insert the row. Stream large `bytea`/`text` values; never load a whole huge value into memory more than once.
 - After copying each table: `ANALYZE` it.
-- Decided while building `copy`: each chunk = one writer task that starts its reader and streams through its own bounded pipe; at most `readers` chunks in flight, each with `maxMemoryMb / readers`, so memory is bounded and readers can't deadlock writers. Chunk plans (bounds) are stored per session and reused on resume; the database verifies bounds are strictly increasing before copying (a sample-ordering bug produced overlapping chunks during development). Sampling uses TABLESAMPLE SYSTEM sized to span many pages. Failed chunks retry 3 times; a table whose chunk keeps failing is FAILED and the others continue. Writers use `synchronous_commit = off` (safe: data and state commit together). `copy` refuses while FKs are in place (unless `dropForeignKeys: false`). `truncateTargets: true` (not in the hash) lets a new session empty non-empty targets. `status` derives in-progress table figures from committed chunks. Ctrl-C/SIGTERM set a cancel flag: in-flight chunks roll back, the run is INTERRUPTED, exit 130/143.
+- Decided while building `copy`: each chunk = one writer task that starts its reader and streams through its own bounded pipe; at most `readers` chunks in flight, each with `maxMemoryMb / readers`, so memory is bounded and readers can't deadlock writers. Chunk plans (bounds) are stored per session and reused on resume; the database verifies bounds are strictly increasing before copying (a sample-ordering bug produced overlapping chunks during development). Sampling uses TABLESAMPLE SYSTEM sized to span many pages. Failed chunks retry 3 times; a table whose chunk keeps failing is FAILED and the others continue. Writers use `synchronous_commit = off` (safe: data and state commit together). `copy` refuses while FKs are in place (unless `dropForeignKeys: false`). `status` derives in-progress table figures from committed chunks. Ctrl-C/SIGTERM set a cancel flag: in-flight chunks roll back, the run is INTERRUPTED, exit 130/143.
 - Design the row-level path with a `RowTransformer` interface (no-op by default), so data masking can be added later.
 
 ## Progress and timing
@@ -150,3 +150,8 @@ All of the above is implemented. Notes on how:
 - Log file: `<job>.log` next to the job file, appended per command, every line redacted; the tool's loggers go to the file only.
 - Tests: Testcontainers 2.0.5 (two postgres:17 containers) + Liquibase 4.33.0 (Apache 2.0; 5.x is FSL) changelog in `cli/src/test/resources/e2e/changelog.sql`; the kill scenario kills a real child JVM with `kill -9`. The docker-compose `test-env/` stays for manual runs and the remaining integration tests.
 - Not done: schema mapping (target schema with another name than the source).
+
+## Desktop UI (added later)
+- Module `ui`: Compose for Desktop 1.12.2 (Material), built with Maven: Compose compiler via `-Xplugin` (embeddable plugin jar), `-desktop` artifacts named explicitly, Google Maven repo for AndroidX, AndroidX compose runtime pinned to 1.12.1. Runs as a plain Java app (shaded jar with the macOS arm64 skiko runtime; `-Dskiko.platform` for others); no native packaging.
+- Profiles: `~/.config/pumplet-onegin/profiles/<name>/{job.yaml, secrets.yaml}` (dir 700, secrets 600; `PUMPLET_ONEGIN_HOME` overrides). A profile is an ordinary job, usable from the CLI. Edited with a form; validated offline with ConfigLoader on start and on save; nothing connects until a button is pressed.
+- Commands run the real CLI in-process (`runCli` with `Io` streams feeding the output pane, cancel flag = Stop), one at a time; target-writing commands ask for confirmation. Progress lines every 2 s (`Io.progressEverySeconds`).

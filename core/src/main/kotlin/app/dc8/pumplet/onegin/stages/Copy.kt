@@ -69,7 +69,7 @@ class CopyStage(
         val plans = report.tables.filter { it.action == TableAction.COPY }
         val resuming = Db.connect(config.target, Role.TARGET).use { c ->
             val started = copyStarted(c, session)
-            if (!started) prepareTargets(c, plans.map { it.table }, config.truncateTargets, events)
+            if (!started) refuseNonEmpty(c, plans.map { it.table })
             checkForeignKeys(c, plans.map { it.table })
             started
         }

@@ -85,15 +85,13 @@ data class JobConfig(
     val buffer: BufferConfig,
     val constraints: ConstraintsConfig,
     val diff: DiffConfig = DiffConfig(allowTypeDifferences = false),
-    /** Let a new session empty non-empty target tables instead of refusing. Not part of the hash. */
-    val truncateTargets: Boolean = false,
     val state: StateConfig,
     /** Scrubs every value from the secrets file; use on anything that may reach output. */
     val redactor: Redactor,
 ) {
     /**
      * Identifies the job for session matching. Excludes passwords, the secrets
-     * file location, the state table location and truncateTargets, so rotating a password or running with `--secrets` on another
+     * file location and the state table location, so rotating a password or running with `--secrets` on another
      * machine doesn't break resume.
      */
     fun configHash(): String {
@@ -123,5 +121,5 @@ data class JobConfig(
     override fun toString(): String =
         "JobConfig(jobFile=$jobFile, source=${source.copy(url = Redactor.safeJdbcUrl(source.url))}, " +
             "target=${target.copy(url = Redactor.safeJdbcUrl(target.url))}, tables=$tables, threads=$threads, " +
-            "chunking=$chunking, buffer=$buffer, constraints=$constraints, diff=$diff, truncateTargets=$truncateTargets, state=$state)"
+            "chunking=$chunking, buffer=$buffer, constraints=$constraints, diff=$diff, state=$state)"
 }

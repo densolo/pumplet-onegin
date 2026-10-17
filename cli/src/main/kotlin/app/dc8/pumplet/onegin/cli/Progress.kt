@@ -64,7 +64,7 @@ abstract class ProgressView : AutoCloseable {
     protected val elapsedSeconds get() = (System.nanoTime() - startNanos) / 1e9
 
     companion object {
-        fun create(io: Io): ProgressView = if (io.interactive) BarsView() else LinesView(io)
+        fun create(io: Io): ProgressView = if (io.interactive) BarsView() else LinesView(io, io.progressEverySeconds)
     }
 }
 
@@ -127,7 +127,7 @@ private class BarsView : ProgressView() {
 }
 
 /** Not a terminal (piped, CI, log file): a line per finished table and a summary every [everySeconds]. */
-private class LinesView(private val io: Io, private val everySeconds: Long = 10) : ProgressView() {
+private class LinesView(private val io: Io, private val everySeconds: Long) : ProgressView() {
     @Volatile private var lastLine = System.nanoTime()
 
     override fun onEvent(e: Event) {

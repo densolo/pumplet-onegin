@@ -34,12 +34,14 @@ object Exit {
  * Where commands write: [out] for results, [err] for warnings and errors.
  * [interactive]: [out] is a terminal, so progress can be animated.
  * [cancel]: set when the user asks to stop (Ctrl-C); long stages watch it.
+ * [progressEverySeconds]: how often a non-interactive copy prints a progress line.
  */
 class Io(
     val out: PrintStream,
     val err: PrintStream,
     val interactive: Boolean = false,
     val cancel: AtomicBoolean = AtomicBoolean(),
+    val progressEverySeconds: Long = 10,
 )
 
 /**

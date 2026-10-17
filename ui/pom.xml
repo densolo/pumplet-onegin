@@ -1,0 +1,218 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>app.dc8.pumplet.onegin</groupId>
+        <artifactId>pumplet-onegin-parent</artifactId>
+        <version>1.0-SNAPSHOT</version>
+    </parent>
+
+    <!--
+      Desktop UI (Compose for Desktop) on top of the CLI and core. Runs as a plain Java app:
+        mvn -pl ui -am package && java -jar ui/target/pumplet-onegin-ui.jar
+      or run app.dc8.pumplet.onegin.ui.MainKt from the IDE.
+      The skiko runtime below is for macOS on Apple Silicon; use the -macos-x64, -linux-x64 or
+      -windows-x64 artifact on other machines (-Dskiko.platform=...).
+    -->
+    <artifactId>pumplet-onegin-ui</artifactId>
+
+    <properties>
+        <compose.version>1.12.2</compose.version>
+        <skiko.version>0.150.2</skiko.version>
+        <skiko.platform>macos-arm64</skiko.platform>
+        <androidx.compose.version>1.12.1</androidx.compose.version>
+        <!--
+          The Compose compiler plugin jar for -Xplugin, in the default local repository (the provided
+          dependencies below make sure it's downloaded there). Built from ${user.home} because
+          IntelliJ's Maven import resolves system properties but not ${settings.localRepository}.
+          Maven's Kotlin compiler is the embeddable one, so it needs the -embeddable plugin; IntelliJ's
+          build uses the plain compiler and plugin (see the "intellij" profile).
+          With a non-default local repository, override it: -Dcompose.compiler.plugin.jar=<path>.
+        -->
+        <compose.compiler.plugin.jar>${user.home}/.m2/repository/org/jetbrains/kotlin/kotlin-compose-compiler-plugin-embeddable/${kotlin.version}/kotlin-compose-compiler-plugin-embeddable-${kotlin.version}.jar</compose.compiler.plugin.jar>
+    </properties>
+
+    <repositories>
+        <!-- Compose for Desktop depends on AndroidX libraries, which are published here. -->
+        <repository>
+            <id>google</id>
+            <url>https://maven.google.com/</url>
+        </repository>
+    </repositories>
+
+    <!--
+      AndroidX artifacts pin exact versions ([1.12.1,1.12.1] vs [1.11.0,1.11.0]); Gradle aligns them,
+      Maven needs them pinned to the version Compose ${compose.version} is built on.
+    -->
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>androidx.compose.runtime</groupId>
+                <artifactId>runtime-desktop</artifactId>
+                <version>${androidx.compose.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>androidx.compose.runtime</groupId>
+                <artifactId>runtime-saveable-desktop</artifactId>
+                <version>${androidx.compose.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>androidx.compose.runtime</groupId>
+                <artifactId>runtime-retain-desktop</artifactId>
+                <version>${androidx.compose.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>androidx.compose.runtime</groupId>
+                <artifactId>runtime-annotation-jvm</artifactId>
+                <version>${androidx.compose.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <dependency>
+            <groupId>app.dc8.pumplet.onegin</groupId>
+            <artifactId>pumplet-onegin-cli</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.jetbrains.kotlin</groupId>
+            <artifactId>kotlin-stdlib</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.jetbrains.kotlinx</groupId>
+            <artifactId>kotlinx-coroutines-swing</artifactId>
+            <version>${coroutines.version}</version>
+        </dependency>
+        <!-- Compose for Desktop: Maven needs the -desktop (JVM) artifacts named directly. -->
+        <dependency>
+            <groupId>org.jetbrains.compose.runtime</groupId>
+            <artifactId>runtime-desktop</artifactId>
+            <version>${compose.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.jetbrains.compose.ui</groupId>
+            <artifactId>ui-desktop</artifactId>
+            <version>${compose.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.jetbrains.compose.foundation</groupId>
+            <artifactId>foundation-desktop</artifactId>
+            <version>${compose.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.jetbrains.compose.material</groupId>
+            <artifactId>material-desktop</artifactId>
+            <version>${compose.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.jetbrains.skiko</groupId>
+            <artifactId>skiko-awt-runtime-${skiko.platform}</artifactId>
+            <version>${skiko.version}</version>
+        </dependency>
+        <!-- Only so the Compose compiler plugin jars are in the local repository for -Xplugin (see properties). -->
+        <dependency>
+            <groupId>org.jetbrains.kotlin</groupId>
+            <artifactId>kotlin-compose-compiler-plugin-embeddable</artifactId>
+            <version>${kotlin.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <!-- The same plugin built for the plain (non-embeddable) compiler, for IntelliJ's build. -->
+            <groupId>org.jetbrains.kotlin</groupId>
+            <artifactId>kotlin-compose-compiler-plugin</artifactId>
+            <version>${kotlin.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.jetbrains.kotlin</groupId>
+            <artifactId>kotlin-test-junit5</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <finalName>pumplet-onegin-ui</finalName>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>app.dc8.pumplet.onegin.ui.MainKt</mainClass>
+                                    <manifestEntries>
+                                        <!-- Skia (skiko) and Mordant load native code; allow it without JDK warnings. -->
+                                        <Enable-Native-Access>ALL-UNNAMED</Enable-Native-Access>
+                                    </manifestEntries>
+                                </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                        <exclude>META-INF/MANIFEST.MF</exclude>
+                                        <exclude>META-INF/versions/*/module-info.class</exclude>
+                                        <exclude>module-info.class</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <configuration>
+                    <mainClass>app.dc8.pumplet.onegin.ui.MainKt</mainClass>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.jetbrains.kotlin</groupId>
+                <artifactId>kotlin-maven-plugin</artifactId>
+                <configuration>
+                    <args>
+                        <arg>-Xplugin=${compose.compiler.plugin.jar}</arg>
+                    </args>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <profile>
+            <!--
+              Active only while IntelliJ IDEA imports the project (it sets idea.maven.embedder.version):
+              IntelliJ compiles with the plain Kotlin compiler, which needs the plain Compose plugin.
+            -->
+            <id>intellij</id>
+            <activation>
+                <property>
+                    <name>idea.maven.embedder.version</name>
+                </property>
+            </activation>
+            <properties>
+                <compose.compiler.plugin.jar>${user.home}/.m2/repository/org/jetbrains/kotlin/kotlin-compose-compiler-plugin/${kotlin.version}/kotlin-compose-compiler-plugin-${kotlin.version}.jar</compose.compiler.plugin.jar>
+            </properties>
+        </profile>
+    </profiles>
+</project>

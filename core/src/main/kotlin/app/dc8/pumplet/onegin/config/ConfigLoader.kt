@@ -53,7 +53,6 @@ class ConfigLoader(
                 c.bool("disableUserTriggers", true),
             ).also { c.finish() }
         }
-        val truncateTargets = r.bool("truncateTargets", false)
         val diff = r.obj("diff")?.let { d -> DiffConfig(d.bool("allowTypeDifferences", false)).also { d.finish() } }
         // null = default: resolved below, once the source schemas are known to be valid.
         val stateTable = r.obj("state")?.let { st ->
@@ -99,7 +98,6 @@ class ConfigLoader(
             target = target!!.copy(password = resolved["target.password"]),
             tables = tables!!, threads = threads!!, chunking = chunking!!, buffer = buffer!!, constraints = constraints!!,
             diff = diff!!,
-            truncateTargets = truncateTargets,
             state = stateTable?.let { StateConfig(it) } ?: StateConfig.default(source!!.schemas),
             redactor = Redactor(secrets.values),
         )

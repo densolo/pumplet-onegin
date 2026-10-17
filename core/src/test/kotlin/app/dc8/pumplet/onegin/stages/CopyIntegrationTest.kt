@@ -267,26 +267,15 @@ class CopyIntegrationTest {
     }
 
     @Test
-    fun `a new session refuses non-empty targets unless truncateTargets is set`() {
+    fun `a new session refuses non-empty targets and says how to empty them`() {
         dst("insert into $s.ser (v) values ('mine')")
         val e = assertFailsWith<StageException> {
             SessionManager(config()).begin("run").use { RunStage(config()).run(it) }
         }
         assertContains(e.message!!, "these target tables already have rows: $s.ser")
-        tearDownSessions()
-
-        val cfg = config("truncateTargets: true\n")
-        val warnings = mutableListOf<String>()
-        SessionManager(cfg).begin("run").use { session ->
-            RunStage(cfg, EventSink { if (it is Event.Warning) warnings += it.message }).run(session)
-            session.succeed()
-        }
-        assertTrue(warnings.any { it.contains("emptying 1 target table(s): $s.ser") }, warnings.toString())
-        assertEquals(checksums(55432, "src-admin-pw"), checksums(55433, "dst-pw"))
+        assertContains(e.message!!, "truncate \"$s\".\"ser\";")
+        assertEquals(1, targetRows(), "nothing was emptied or copied")
     }
-
-    /** The refused run left an open session with nothing done; drop the state to start clean. */
-    private fun tearDownSessions() = dst("drop table if exists $s.pumplet_onegin_state")
 
     @Test
     fun `fetch-test reads everything and touches nothing on the target`() {

@@ -73,7 +73,7 @@ class DisableStage(private val config: JobConfig, private val events: EventSink 
         val report = diff ?: diffStage(config, session, events)
         val tables = report.tables.filter { it.action == TableAction.COPY }.map { it.table }
         Db.connect(config.target, Role.TARGET).use { c ->
-            if (!copyStarted(c, session)) prepareTargets(c, tables, config.truncateTargets, events)
+            if (!copyStarted(c, session)) refuseNonEmpty(c, tables)
             events.emit(Event.StageStarted(Stage.DISABLE))
             val result = session.stage(Stage.DISABLE, summary = { r: Result -> summary(r) }) {
                 val objects = TargetObjects(c, session.store, session.id, config.redactor, events)
@@ -101,22 +101,18 @@ fun copyStarted(c: java.sql.Connection, session: ActiveSession): Boolean =
     session.store.get<StageInfo>(c, session.id, Kind.STAGE, Stage.COPY.label) != null
 
 /**
- * A new session never writes into tables that already hold data: it refuses, or
- * with `truncateTargets: true` empties exactly those tables (and says which).
+ * A new session never writes into tables that already hold data. The tool never empties
+ * them itself: the user decides, and the message gives the statement to do it.
  */
-fun prepareTargets(c: java.sql.Connection, tables: List<String>, truncate: Boolean, events: EventSink) {
+fun refuseNonEmpty(c: java.sql.Connection, tables: List<String>) {
     val nonEmpty = tables.filter { t ->
         c.createStatement().use { st -> st.executeQuery("select exists (select 1 from ${Sql.table(t)})").use { it.next(); it.getBoolean(1) } }
     }
     if (nonEmpty.isEmpty()) return
-    if (!truncate) {
-        throw StageException(
-            "these target tables already have rows: ${nonEmpty.joinToString(", ")}; " +
-                "a new session only copies into empty tables (empty them, or set truncateTargets: true)"
-        )
-    }
-    events.emit(Event.Warning("truncateTargets: emptying ${nonEmpty.size} target table(s): ${nonEmpty.joinToString(", ")}"))
-    c.createStatement().use { it.execute("truncate ${nonEmpty.joinToString(", ") { Sql.table(it) }}") }
+    throw StageException(
+        "these target tables already have rows: ${nonEmpty.joinToString(", ")}; a new session only copies into " +
+            "empty tables. Empty them yourself if that's intended, e.g.: truncate ${nonEmpty.joinToString(", ") { Sql.table(it) }};"
+    )
 }
 
 /**
