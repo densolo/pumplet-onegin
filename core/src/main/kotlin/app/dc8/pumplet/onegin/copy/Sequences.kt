@@ -56,9 +56,9 @@ object Sequences {
      * value is after [value], unless it already is. Returns the old position if it moved.
      */
     fun raise(c: Connection, qualified: String, value: Long): Pair<Boolean, Long?> {
-        val current = c.prepareStatement(
-            "select s.last_value from pg_sequences s where format('%I.%I', s.schemaname, s.sequencename)::regclass = cast(? as regclass)"
-        ).use { ps ->
+        // Reads just this sequence (null if never used). Needs privileges on it only: a query over
+        // pg_sequences would resolve every sequence's name, and fail on schemas the user can't use.
+        val current = c.prepareStatement("select pg_sequence_last_value(cast(? as regclass))").use { ps ->
             ps.setString(1, qualified)
             ps.executeQuery().use { rs -> if (rs.next()) rs.getLong(1).takeUnless { rs.wasNull() } else null }
         }

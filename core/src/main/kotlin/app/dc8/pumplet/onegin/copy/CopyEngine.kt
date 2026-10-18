@@ -310,7 +310,8 @@ class CopyEngine(
             tr.result = res
             events.emit(Event.TableFinished(tr.job.table, true, res.rows, res.bytes, res.durationMs, null))
         } catch (e: Exception) {
-            tr.error = "finishing the table: ${redactor.scrub(rootMessage(e))}"
+            tr.error = "all chunks are copied; finishing the table failed (run `copy` again to retry just this): " +
+                redactor.scrub(SqlError.find(e)?.message ?: rootMessage(e))
             events.emit(Event.TableFinished(tr.job.table, false, tr.rows.get(), tr.bytes.get(), elapsed(tr), tr.error))
         }
     }
