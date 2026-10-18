@@ -28,7 +28,7 @@ class ProfileStoreTest {
         include = listOf("app_owner.order*"), exclude = listOf("app_owner.audit_*"),
         readers = 12, writers = 3, rowsPerChunk = 50_000, minRowsToSplit = 100_000, maxMemoryMb = 512,
         dropForeignKeys = true, dropSecondaryIndexes = true, disableUserTriggers = false,
-        allowTypeDifferences = true, raiseSequences = false, stateTable = "ops.copy_state",
+        allowTypeDifferences = true, raiseSequences = false, largeObjectsRowByRow = true, stateTable = "ops.copy_state",
     )
 
     @Test
@@ -45,6 +45,7 @@ class ProfileStoreTest {
         assertEquals("ops.copy_state", config.state.table.qualified)
         assertTrue(config.diff.allowTypeDifferences)
         assertFalse(config.sequences.raiseToSource)
+        assertEquals(app.dc8.pumplet.onegin.config.LargeObjectMode.ROW_BY_ROW, config.largeObjects.mode)
     }
 
     @Test

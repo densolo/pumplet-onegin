@@ -82,6 +82,7 @@ class CopyIntegrationTest {
         insert into $s.wide select g, 'w' || g from generate_series(1, 100) g;
         insert into $s.lob select g, lo_from_bytea(0, convert_to(repeat('lo-' || g, 5000), 'UTF8')) from generate_series(1, 20) g;
         insert into $s.lob values (21, null);
+        insert into $s.lob select 22, data from $s.lob where id = 1;   -- shares row 1's large object
         grant usage on schema $s to app_ro;
         grant select on all tables in schema $s to app_ro;
         select setval('$s.ser_id_seq', 5000);
@@ -114,7 +115,7 @@ class CopyIntegrationTest {
     @AfterEach
     fun tearDown() {
         if (!reachable(55432)) return
-        val dropLobs = "select lo_unlink(data) from $s.lob where data is not null"
+        val dropLobs = "select lo_unlink(o) from (select distinct data as o from $s.lob where data is not null) x"
         runCatching { src(dropLobs) }
         runCatching { dst(dropLobs) }
         src("drop schema if exists $s cascade")
@@ -305,7 +306,7 @@ class CopyIntegrationTest {
     fun `fetch-test reads everything and touches nothing on the target`() {
         val cfg = config()
         val r = FetchTest(cfg).run()
-        val expected = mapOf("parent" to 30000L, "skew" to 22000L, "nopk" to 3000L, "lob" to 21L)
+        val expected = mapOf("parent" to 30000L, "skew" to 22000L, "nopk" to 3000L, "lob" to 22L)
         for ((t, n) in expected) assertEquals(n, r.tables.single { it.table == "$s.$t" }.rows, t)
         assertTrue(r.tables.single { it.table == "$s.child" }.rows > 100_000 - 20_000)
         assertEquals(0, targetRows())
@@ -370,5 +371,31 @@ class CopyIntegrationTest {
         assertEquals(700, lastValue("ser_id_seq"))
         assertEquals(null, lastValue("global_seq"))
         assertEquals(99999, lastValue("ahead_seq"))
+    }
+
+    private fun copyLobTable(cfg: JobConfig): List<Event> {
+        val events = java.util.concurrent.CopyOnWriteArrayList<Event>()
+        SessionManager(cfg).begin("run").use { session -> RunStage(cfg, EventSink { events += it }).run(session); session.succeed() }
+        return events
+    }
+
+    @Test
+    fun `large objects in bulk - contents streamed with the rows, shared objects created once`() {
+        val events = copyLobTable(config("tables:\n  include: [$s.lob]\n"))
+        val c = checksums(55432, "src-admin-pw")
+        val t = checksums(55433, "dst-pw")
+        assertEquals(c["lob"], t["lob"])
+        assertEquals(c["lob contents"], t["lob contents"])
+        // Streamed like any table, so it reports progress; 20 distinct objects for 22 rows.
+        assertTrue(events.any { it is Event.ChunkProgress && it.table == "$s.lob" })
+        assertEquals(20, query(55433, "dst-pw", "select count(*) from pg_largeobject_metadata where oid in (select data from $s.lob)") { it.getInt(1) })
+        assertEquals(1, query(55433, "dst-pw", "select count(distinct data) from $s.lob where id in (1, 22)") { it.getInt(1) })
+    }
+
+    @Test
+    fun `large objects row by row give the same result`() {
+        copyLobTable(config("tables:\n  include: [$s.lob]\nlargeObjects:\n  mode: rowByRow\n"))
+        assertEquals(checksums(55432, "src-admin-pw")["lob contents"], checksums(55433, "dst-pw")["lob contents"])
+        assertEquals(checksums(55432, "src-admin-pw")["lob"], checksums(55433, "dst-pw")["lob"])
     }
 }

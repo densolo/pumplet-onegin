@@ -1,6 +1,7 @@
 package app.dc8.pumplet.onegin.stages
 
 import app.dc8.pumplet.onegin.config.JobConfig
+import app.dc8.pumplet.onegin.config.LargeObjectMode
 import app.dc8.pumplet.onegin.config.TableFilter
 import app.dc8.pumplet.onegin.copy.ChunkPlanner
 import app.dc8.pumplet.onegin.copy.CopyEngine
@@ -146,7 +147,12 @@ class CopyStage(
             val chunks = savedPlans[plan.table] ?: planner.plan(plan.table, plan.primaryKey, plan.primaryKeyTypes, plan.estRows)
                 .also { session.put(Kind.CHUNK_PLAN, plan.table, it) }
             val doneHere = done[plan.table].orEmpty().associateBy { it.index }
-            TableJob(plan, chunks, doneHere, truncateFirst = resuming && plan.primaryKey.isEmpty() && doneHere.isEmpty())
+            TableJob(
+                plan, chunks, doneHere,
+                truncateFirst = resuming && plan.primaryKey.isEmpty() && doneHere.isEmpty(),
+                // A row transformer sees rows one by one, so it keeps the row path.
+                largeObjectsInBulk = config.largeObjects.mode == LargeObjectMode.BULK && transformer === RowTransformer.NONE,
+            )
         }
     }
 

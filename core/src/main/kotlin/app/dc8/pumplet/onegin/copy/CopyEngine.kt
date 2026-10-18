@@ -29,9 +29,24 @@ data class TableJob(
     val done: Map<Int, ChunkDone> = emptyMap(),
     /** Empty the table in the chunk's transaction first (a single-chunk table without a primary key being redone). */
     val truncateFirst: Boolean = false,
+    /** Large-object contents travel in the streaming COPY (`lo_get`) instead of one object at a time. */
+    val largeObjectsInBulk: Boolean = false,
 ) {
     val table get() = plan.table
     val columnList get() = plan.columns.joinToString(", ") { Sql.ident(it.name) }
+
+    /** True if this table's chunks go row by row over the large-object API. */
+    val rowByRow get() = plan.largeObjects && !largeObjectsInBulk
+
+    /** What the source COPY selects: the columns, plus each large object's contents in bulk mode. */
+    val sourceSelectList: String
+        get() = if (!plan.largeObjects || !largeObjectsInBulk) columnList
+        else columnList + plan.columns.filter { it.largeObject }.joinToString("") { ", lo_get(${Sql.ident(it.name)}) as ${Sql.ident(it.name + LO_DATA_SUFFIX)}" }
+
+    companion object {
+        /** Suffix of the column carrying a large object's contents next to its oid. */
+        const val LO_DATA_SUFFIX = "__pumplet_lo"
+    }
 }
 
 data class ChunkTask(val job: TableJob, val index: Int)
@@ -162,7 +177,7 @@ class CopyEngine(
         for (attempt in 1..attempts) {
             if (cancel.get()) break
             try {
-                val stats = if (task.job.plan.largeObjects && sink.rowPathForLargeObjects) {
+                val stats = if (task.job.rowByRow && sink.rowPathForLargeObjects) {
                     rowChunk(task)
                 } else {
                     streamChunk(task, readerPool)
@@ -227,7 +242,7 @@ class CopyEngine(
         val job = task.job
         val where = ChunkPlanner.predicate(job.chunks, job.plan.primaryKeyTypes, task.index)?.let { " where $it" } ?: ""
         val format = if (job.plan.binary) "binary" else "text"
-        val sql = "copy (select ${job.columnList} from ${Sql.table(job.table)}$where) to stdout (format $format)"
+        val sql = "copy (select ${job.sourceSelectList} from ${Sql.table(job.table)}$where) to stdout (format $format)"
         sourcePool.connection.use { c ->
             var broken = false
             try {

@@ -64,6 +64,20 @@ data class DiffConfig(
     val allowTypeDifferences: Boolean,
 )
 
+/** How tables with large-object (oid) columns are copied. */
+enum class LargeObjectMode(val key: String) {
+    /** Contents travel with the rows in the streaming COPY; created on the target set-wise. Fast. */
+    BULK("bulk"),
+    /** One object at a time over the large-object API. Slow, but holds only a piece of an object in memory. */
+    ROW_BY_ROW("rowByRow");
+
+    companion object {
+        fun of(key: String) = entries.firstOrNull { it.key == key }
+    }
+}
+
+data class LargeObjectsConfig(val mode: LargeObjectMode = LargeObjectMode.BULK)
+
 data class SequencesConfig(
     /**
      * After the copy, raise target sequences that are behind their source counterparts
@@ -94,13 +108,15 @@ data class JobConfig(
     val constraints: ConstraintsConfig,
     val diff: DiffConfig = DiffConfig(allowTypeDifferences = false),
     val sequences: SequencesConfig = SequencesConfig(),
+    val largeObjects: LargeObjectsConfig = LargeObjectsConfig(),
     val state: StateConfig,
     /** Scrubs every value from the secrets file; use on anything that may reach output. */
     val redactor: Redactor,
 ) {
     /**
      * Identifies the job for session matching. Excludes passwords, the secrets
-     * file location, the state table location and the sequences option, so rotating a password or running with `--secrets` on another
+     * file location, the state table location and the sequences and
+     * large-object options (how, not what, is copied), so rotating a password or running with `--secrets` on another
      * machine doesn't break resume.
      */
     fun configHash(): String {
@@ -130,5 +146,5 @@ data class JobConfig(
     override fun toString(): String =
         "JobConfig(jobFile=$jobFile, source=${source.copy(url = Redactor.safeJdbcUrl(source.url))}, " +
             "target=${target.copy(url = Redactor.safeJdbcUrl(target.url))}, tables=$tables, threads=$threads, " +
-            "chunking=$chunking, buffer=$buffer, constraints=$constraints, diff=$diff, sequences=$sequences, state=$state)"
+            "chunking=$chunking, buffer=$buffer, constraints=$constraints, diff=$diff, sequences=$sequences, largeObjects=$largeObjects, state=$state)"
 }

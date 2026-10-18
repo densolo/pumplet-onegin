@@ -419,9 +419,19 @@ file), it prints a line as each table finishes and a summary line every 10 secon
 - **Columns:** a table gets the columns both sides have. Columns generated on the target are left
   for the target to compute. Identity values are copied as they are, `GENERATED ALWAYS`
   included.
-- **Large objects:** tables with `oid` columns that reference large objects go row by row. Each
-  object is copied with the same OID and then its row is inserted. On this path rows pass
-  through a `RowTransformer` hook, a no-op for now, so that data masking can be added later.
+- **Large objects:** tables with `oid` columns that reference large objects keep each object's
+  OID. By default (`largeObjects.mode: bulk`) a chunk's object contents stream with its rows: the
+  source query adds `lo_get(column)`. On the target, the chunk goes into a temporary staging
+  table in one `COPY`. Then the missing objects are created with their original OIDs
+  (`lo_from_bytea`) and the rows are inserted, set-wise and in the chunk's transaction. An object
+  that several rows share is created once.
+  - **Measured:** on local databases, 20,000 objects of 8 KB took 2 s, against 29 s row by row.
+    Over a remote link the difference is much larger.
+  - **`rowByRow`:** copies one object at a time over the large-object API, as earlier versions
+    did. It's slow, but it never holds a whole object in memory. Use it only for objects of
+    hundreds of MB, because `lo_get` puts a whole object into one message.
+  - **Row transformer:** the row-by-row path also passes rows through a `RowTransformer` hook (a
+    no-op for now, for data masking later), so setting a transformer keeps a table on that path.
 - **Resuming:** a resumed copy takes a new snapshot of the source and says so. Chunks copied by
   earlier runs may reflect an earlier state of the source than the rest.
 
@@ -553,6 +563,9 @@ diff:
 sequences:
   raiseToSource: true      # after the copy, raise target sequences that are behind the source
 
+largeObjects:
+  mode: bulk               # bulk: contents stream with the rows; rowByRow: one object at a time (slow)
+
 state:
   table: app.pumplet_onegin_state  # where session state is kept on the target;
                                    # default: <first source schema>.pumplet_onegin_state
@@ -574,7 +587,7 @@ error: invalid configuration
   - bad.yaml: source.password: plain-text passwords are not allowed in the job file; move it to the secrets file and reference it as ${secret:<name>}
   - bad.yaml: source.schemas: list at least one schema to copy
   - bad.yaml: source.schema: unknown key (did you mean 'schemas'?); allowed: url, user, password, schemas
-  - bad.yaml: threds: unknown key (did you mean 'threads'?); allowed: secrets, source, target, tables, threads, chunking, buffer, constraints, sequences, diff, state
+  - bad.yaml: threds: unknown key (did you mean 'threads'?); allowed: secrets, source, target, tables, threads, chunking, buffer, constraints, largeObjects, sequences, diff, state
 ```
 
 ### Secrets file

@@ -44,6 +44,7 @@ class TargetSink(
 
     override fun write(task: ChunkTask, input: InputStream): Long {
         val job = task.job
+        if (job.plan.largeObjects && job.largeObjectsInBulk) return writeWithLargeObjects(task, input)
         val format = if (job.plan.binary) "binary" else "text"
         val t0 = System.nanoTime()
         val subject = chunkSubject(task)
@@ -54,6 +55,54 @@ class TargetSink(
             val rows = SqlError.on(c, Role.TARGET, subject, copy) {
                 c.unwrap(PGConnection::class.java).copyAPI.copyIn(copy, counting, 64 * 1024)
             }
+            recordChunk(c, task, ChunkDone(job.table, task.index, rows, counting.count.get(), elapsedMs(t0), runSeq))
+            rows
+        }
+    }
+
+    /**
+     * Large-object tables in bulk: the chunk arrives with each object's contents next to its oid
+     * (`lo_get` on the source). It goes into a temporary staging table in one COPY; then the
+     * missing objects are created with their original oids and the rows inserted, set-wise,
+     * all in the chunk's transaction. An object several rows share is created once.
+     */
+    private fun writeWithLargeObjects(task: ChunkTask, input: InputStream): Long {
+        val job = task.job
+        val cols = job.plan.columns
+        val lobs = cols.filter { it.largeObject }
+        val format = if (job.plan.binary) "binary" else "text"
+        val subject = chunkSubject(task)
+        val t0 = System.nanoTime()
+        // Binary COPY needs the staging types to match what the source sends; text can be cast later.
+        val stageColumns = cols.map { "${Sql.ident(it.name)} ${if (job.plan.binary) it.targetType else "text"}" } +
+            lobs.map { "${Sql.ident(it.name + TableJob.LO_DATA_SUFFIX)} bytea" }
+        val createStage = "create temp table pumplet_stage (${stageColumns.joinToString(", ")}) on commit drop"
+        val copy = "copy pumplet_stage from stdin (format $format)"
+        val overriding = if (cols.any { it.identityAlways }) " overriding system value" else ""
+        val insert = "insert into ${Sql.table(job.table)} (${job.columnList})$overriding select " +
+            cols.joinToString(", ") { if (job.plan.binary) Sql.ident(it.name) else "cast(${Sql.ident(it.name)} as ${it.targetType})" } +
+            " from pumplet_stage"
+        return inTransaction { c ->
+            truncateIfAsked(c, job, subject)
+            fun exec(sql: String) = SqlError.on(c, Role.TARGET, subject, sql) { c.createStatement().use { it.execute(sql) } }
+            exec(createStage)
+            val counting = CountingInput(input)
+            val rows = SqlError.on(c, Role.TARGET, subject, copy) {
+                c.unwrap(PGConnection::class.java).copyAPI.copyIn(copy, counting, 64 * 1024)
+            }
+            for (lob in lobs) {
+                val oid = Sql.ident(lob.name)
+                val data = Sql.ident(lob.name + TableJob.LO_DATA_SUFFIX)
+                // lo_from_bytea(oid, null) creates nothing: a row pointing at an object the source doesn't have stays that way.
+                exec(
+                    """
+                    select lo_from_bytea(s.id, s.data)
+                    from (select distinct on ($oid) $oid as id, $data as data from pumplet_stage where $oid is not null) s
+                    where not exists (select 1 from pg_largeobject_metadata m where m.oid = s.id)
+                    """.trimIndent()
+                )
+            }
+            exec(insert)
             recordChunk(c, task, ChunkDone(job.table, task.index, rows, counting.count.get(), elapsedMs(t0), runSeq))
             rows
         }

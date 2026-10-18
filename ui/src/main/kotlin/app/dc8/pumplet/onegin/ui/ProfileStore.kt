@@ -36,6 +36,8 @@ data class Profile(
     val disableUserTriggers: Boolean = true,
     val allowTypeDifferences: Boolean = false,
     val raiseSequences: Boolean = true,
+    /** Copy large objects one at a time (slow) instead of streaming them with the rows. */
+    val largeObjectsRowByRow: Boolean = false,
     /** Empty = the default, `<first schema>.pumplet_onegin_state`. */
     val stateTable: String = "",
 )
@@ -54,6 +56,7 @@ fun Profile.customisedAdvanced(): List<String> {
         "disable user triggers".takeIf { disableUserTriggers != d.disableUserTriggers },
         "allow type differences".takeIf { allowTypeDifferences != d.allowTypeDifferences },
         "raise sequences".takeIf { raiseSequences != d.raiseSequences },
+        "large objects row by row".takeIf { largeObjectsRowByRow != d.largeObjectsRowByRow },
         "state table".takeIf { stateTable != d.stateTable },
     )
 }
@@ -119,6 +122,7 @@ class ProfileStore(val root: Path = defaultRoot()) {
             disableUserTriggers = constraints.flag("disableUserTriggers", d.disableUserTriggers),
             allowTypeDifferences = section("diff").flag("allowTypeDifferences", false),
             raiseSequences = section("sequences").flag("raiseToSource", d.raiseSequences),
+            largeObjectsRowByRow = section("largeObjects").str("mode") == "rowByRow",
             stateTable = section("state").str("table"),
         )
     }
@@ -192,6 +196,8 @@ class ProfileStore(val root: Path = defaultRoot()) {
         appendLine("  allowTypeDifferences: ${p.allowTypeDifferences}")
         appendLine("sequences:")
         appendLine("  raiseToSource: ${p.raiseSequences}")
+        appendLine("largeObjects:")
+        appendLine("  mode: ${if (p.largeObjectsRowByRow) "rowByRow" else "bulk"}")
         if (p.stateTable.isNotBlank()) {
             appendLine("state:")
             appendLine("  table: ${q(p.stateTable)}")

@@ -301,7 +301,10 @@ private fun ProfileForm(state: AppState, p: Profile, modifier: Modifier) {
                     CheckRow("Raise sequences", p.raiseSequences, "to the source's values if lower, so local inserts don't reuse source ids") { v ->
                         update { it.copy(raiseSequences = v) }
                     }
-                    CheckRow("Allow type differences", p.allowTypeDifferences, "copy differing columns as text instead of blocking") { v ->
+                    CheckRow("Large objects row by row", p.largeObjectsRowByRow, "slow; only for very large objects (hundreds of MB each)") { v ->
+                    update { it.copy(largeObjectsRowByRow = v) }
+                }
+                CheckRow("Allow type differences", p.allowTypeDifferences, "copy differing columns as text instead of blocking") { v ->
                         update { it.copy(allowTypeDifferences = v) }
                     }
                     TextRow("State table", p.stateTable, placeholder = "default: <first schema>.pumplet_onegin_state") { v -> update { it.copy(stateTable = v.trim()) } }

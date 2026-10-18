@@ -53,6 +53,13 @@ class ConfigLoader(
                 c.bool("disableUserTriggers", true),
             ).also { c.finish() }
         }
+        val largeObjects = r.obj("largeObjects")?.let { l ->
+            val raw = l.string("mode")
+            val mode = raw?.let { LargeObjectMode.of(it) ?: LargeObjectMode.BULK.also { _ ->
+                l.reportError("${l.keyPath("mode")}: expected one of ${LargeObjectMode.entries.joinToString(", ") { it.key }}")
+            } } ?: LargeObjectMode.BULK
+            LargeObjectsConfig(mode).also { l.finish() }
+        }
         val sequences = r.obj("sequences")?.let { q -> SequencesConfig(q.bool("raiseToSource", true)).also { q.finish() } }
         val diff = r.obj("diff")?.let { d -> DiffConfig(d.bool("allowTypeDifferences", false)).also { d.finish() } }
         // null = default: resolved below, once the source schemas are known to be valid.
@@ -100,6 +107,7 @@ class ConfigLoader(
             tables = tables!!, threads = threads!!, chunking = chunking!!, buffer = buffer!!, constraints = constraints!!,
             diff = diff!!,
             sequences = sequences!!,
+            largeObjects = largeObjects!!,
             state = stateTable?.let { StateConfig(it) } ?: StateConfig.default(source!!.schemas),
             redactor = Redactor(secrets.values),
         )
