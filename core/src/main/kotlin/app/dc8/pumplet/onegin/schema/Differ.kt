@@ -13,7 +13,7 @@ class Differ(private val config: JobConfig) {
     fun run(): DiffReport {
         val schemas = config.source.schemas
         val source = Db.connect(config.source, Role.SOURCE).use { CatalogReader.read(it, schemas) }
-        val target = Db.connect(config.target, Role.TARGET, readOnly = true).use { CatalogReader.read(it, schemas) }
+        val target = Db.connect(config.target, Role.TARGET, readOnly = true).use { CatalogReader.read(it, schemas, Role.TARGET) }
         return SchemaDiff(
             schemas = schemas,
             filter = TableFilter(config.tables),

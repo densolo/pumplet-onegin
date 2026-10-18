@@ -4,6 +4,7 @@ import app.dc8.pumplet.onegin.config.JobConfig
 import app.dc8.pumplet.onegin.db.Db
 import app.dc8.pumplet.onegin.db.Role
 import app.dc8.pumplet.onegin.db.Sql
+import app.dc8.pumplet.onegin.db.SqlError
 import app.dc8.pumplet.onegin.schema.DiffReport
 import app.dc8.pumplet.onegin.schema.Differ
 import app.dc8.pumplet.onegin.schema.TableAction
@@ -106,7 +107,10 @@ fun copyStarted(c: java.sql.Connection, session: ActiveSession): Boolean =
  */
 fun refuseNonEmpty(c: java.sql.Connection, tables: List<String>) {
     val nonEmpty = tables.filter { t ->
-        c.createStatement().use { st -> st.executeQuery("select exists (select 1 from ${Sql.table(t)})").use { it.next(); it.getBoolean(1) } }
+        val sql = "select exists (select 1 from ${Sql.table(t)})"
+        SqlError.on(c, Role.TARGET, "table $t (checking it is empty)", sql) {
+            c.createStatement().use { st -> st.executeQuery(sql).use { it.next(); it.getBoolean(1) } }
+        }
     }
     if (nonEmpty.isEmpty()) return
     throw StageException(

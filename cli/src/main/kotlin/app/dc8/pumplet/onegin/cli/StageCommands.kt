@@ -2,6 +2,7 @@ package app.dc8.pumplet.onegin.cli
 
 import app.dc8.pumplet.onegin.config.ConfigLoader
 import app.dc8.pumplet.onegin.config.JobConfig
+import app.dc8.pumplet.onegin.db.SqlError
 import app.dc8.pumplet.onegin.stages.DisableStage
 import app.dc8.pumplet.onegin.stages.EnableStage
 import app.dc8.pumplet.onegin.stages.Event
@@ -37,6 +38,7 @@ abstract class SessionCommand(name: String, io: Io, loader: ConfigLoader) : JobC
             val how = if (session.resumed) "continuing session" else "new session"
             io.out.println("$how ${session.id.take(8)}, run #${session.run.seq} ($commandName)")
             log.info("{} {}, run #{}", how, session.id, session.run.seq)
+            var detail: String? = null
             val error = try {
                 work(config, session, LoggingEventSink(::print))
             } catch (e: StageException) {
@@ -45,6 +47,7 @@ abstract class SessionCommand(name: String, io: Io, loader: ConfigLoader) : JobC
                 e.message
             } catch (e: java.sql.SQLException) {
                 log.error("$commandName failed", e)
+                detail = SqlError.detailOf(e, config.redactor)
                 config.redactor.scrub(e.message)
             } catch (e: Exception) {
                 log.error("$commandName failed", e)
@@ -63,6 +66,7 @@ abstract class SessionCommand(name: String, io: Io, loader: ConfigLoader) : JobC
             }
             session.fail(error)
             io.err.println("error: $error")
+            detail?.let { io.printDetail(it) }
             return Exit.FAILED
         }
     }
@@ -72,7 +76,10 @@ abstract class SessionCommand(name: String, io: Io, loader: ConfigLoader) : JobC
         when (e) {
             is Event.StageStarted -> out.println("${e.stage.label}...")
             is Event.StageFinished -> out.println("${e.stage.label}: ${e.summary ?: "done"}")
-            is Event.ObjectChanged -> out.println("  ${verb(e.obj)} ${kind(e.obj.kind).padEnd(11)} ${e.obj.table}.${e.obj.name}${e.obj.error?.let { ": $it" } ?: ""}")
+            is Event.ObjectChanged -> {
+                out.println("  ${verb(e.obj)} ${kind(e.obj.kind).padEnd(11)} ${e.obj.table}.${e.obj.name}${e.obj.error?.let { ": $it" } ?: ""}")
+                e.detail?.let { io.printDetail(it) }
+            }
             is Event.Info -> out.println(e.message)
             is Event.Warning -> io.err.println("warning: ${e.message}")
             is Event.TableStarted, is Event.ChunkProgress, is Event.ChunkDone,

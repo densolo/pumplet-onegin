@@ -1,5 +1,7 @@
 package app.dc8.pumplet.onegin.copy
 
+import app.dc8.pumplet.onegin.db.Role
+import app.dc8.pumplet.onegin.db.SqlError
 import java.sql.Connection
 
 /** A sequence's position: [lastValue] is null if it was never used (or can't be read). */
@@ -26,8 +28,8 @@ data class SequenceSyncResult(
  */
 object Sequences {
     /** Sequences of [schemas] with their position (`pg_sequences.last_value`), keyed by `schema.name`. */
-    fun read(c: Connection, schemas: List<String>): Map<String, SequenceState> =
-        c.prepareStatement(
+    fun read(c: Connection, schemas: List<String>, role: Role): Map<String, SequenceState> =
+        SqlError.on(c, role, "reading the sequences of schemas ${schemas.joinToString(", ")}", "select … from pg_sequences …") { c.prepareStatement(
             """
             select n.nspname || '.' || c.relname, s.last_value, q.seqincrement,
                    has_sequence_privilege(c.oid, 'SELECT') or has_sequence_privilege(c.oid, 'USAGE')
@@ -47,7 +49,7 @@ object Sequences {
                     }
                 }
             }
-        }
+        } }
 
     /**
      * Moves sequence [qualified] (a quoted, qualified name) on the target so that its next
@@ -71,8 +73,8 @@ object Sequences {
 
     /** Raises every target sequence of [schemas] that is behind its source counterpart. */
     fun raiseToSource(source: Connection, target: Connection, schemas: List<String>): SequenceSyncResult {
-        val src = read(source, schemas)
-        val dst = read(target, schemas)
+        val src = read(source, schemas, Role.SOURCE)
+        val dst = read(target, schemas, Role.TARGET)
         val raised = linkedMapOf<String, Pair<Long?, Long>>()
         val kept = mutableListOf<String>()
         val skipped = linkedMapOf<String, String>()
@@ -83,7 +85,9 @@ object Sequences {
                 s.increment < 0 || dst.getValue(name).increment < 0 -> skipped[name] = "descending sequence"
                 s.lastValue == null -> kept += name
                 else -> {
-                    val (moved, old) = raise(target, quoted(name), s.lastValue)
+                    val (moved, old) = SqlError.on(target, Role.TARGET, "sequence $name", "select setval('${quoted(name)}', ${s.lastValue}, true)") {
+                        raise(target, quoted(name), s.lastValue)
+                    }
                     if (moved) raised[name] = old to s.lastValue else kept += name
                 }
             }

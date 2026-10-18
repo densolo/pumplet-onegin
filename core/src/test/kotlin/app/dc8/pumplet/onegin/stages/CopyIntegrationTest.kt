@@ -245,15 +245,28 @@ class CopyIntegrationTest {
         val cfg = config()
         dst("alter table $s.parent add constraint no_big check (id < 25000)")
         SessionManager(cfg).begin("disable").use { DisableStage(cfg).run(it); it.succeed() }
-        val failures = AtomicInteger()
+        val failures = java.util.concurrent.CopyOnWriteArrayList<Event.ChunkFailed>()
         SessionManager(cfg).begin("copy").use { session ->
             val e = assertFailsWith<StageException> {
-                CopyStage(cfg, EventSink { if (it is Event.ChunkFailed) failures.incrementAndGet() }).run(session)
+                CopyStage(cfg, EventSink { if (it is Event.ChunkFailed) failures += it }).run(session)
             }
             assertContains(e.message!!, "1 table(s) failed: $s.parent")
             assertContains(e.message!!, "no_big")
+            // Which database and which table/chunk, not just PostgreSQL's words.
+            assertContains(e.message!!, "target database (jdbc:postgresql://localhost:55433/app as postgres), table $s.parent, chunk ")
         }
-        assertEquals(3 * 3, failures.get(), "3 chunks over the limit, each tried 3 times")
+        assertEquals(3 * 3, failures.size, "3 chunks over the limit, each tried 3 times")
+        assertTrue(failures.filter { it.retrying }.all { it.detail == null }, "no detail while retrying")
+        val last = failures.filter { !it.retrying }
+        assertEquals(3, last.size)
+        for (f in last) {
+            val d = f.detail!!
+            assertContains(d, "failed on the target database (jdbc:postgresql://localhost:55433/app as postgres), table $s.parent, chunk ")
+            assertContains(d, "SQL:\n  copy \"$s\".\"parent\" (\"id\", \"name\") from stdin (format binary)")
+            assertContains(d, "(SQLSTATE 23514)")
+            assertContains(d, "stack trace:")
+            assertContains(d, "at app.dc8.pumplet.onegin.copy.TargetSink")
+        }
         val status = StatusReader(cfg).read().detail!!
         assertEquals(TableStatus.FAILED, status.tables.single { it.table == "$s.parent" }.status)
         assertEquals(12, status.tables.single { it.table == "$s.parent" }.chunksDone)

@@ -90,6 +90,11 @@ private class BarsView : ProgressView() {
 
     override fun onEvent(e: Event) {
         super.onEvent(e)
+        // A chunk that failed for good: its detail goes above the bars.
+        val detail = (e as? Event.ChunkFailed)?.detail
+        if (e is Event.ChunkFailed && detail != null) {
+            terminal.println("${e.table} chunk ${e.index + 1} failed:\n" + detail.lines().joinToString("\n") { "    $it" })
+        }
         val table = when (e) {
             is Event.TableStarted -> e.table
             is Event.ChunkProgress -> e.table
@@ -137,9 +142,10 @@ private class LinesView(private val io: Io, private val everySeconds: Long) : Pr
                 if (e.ok) "  done    ${e.table}: %,d rows, %s in %s".format(e.rows, StatusCommand.mb(e.bytes), StatusCommand.ms(e.durationMs))
                 else "  FAILED  ${e.table}: ${e.error}"
             )
-            is Event.ChunkFailed -> io.err.println(
-                "warning: ${e.table} chunk ${e.index + 1}, attempt ${e.attempt}: ${e.error}${if (e.retrying) " (retrying)" else ""}"
-            )
+            is Event.ChunkFailed -> {
+                io.err.println("warning: ${e.table} chunk ${e.index + 1}, attempt ${e.attempt}: ${e.error}${if (e.retrying) " (retrying)" else ""}")
+                e.detail?.let { io.printDetail(it) }
+            }
             else -> Unit
         }
         val now = System.nanoTime()

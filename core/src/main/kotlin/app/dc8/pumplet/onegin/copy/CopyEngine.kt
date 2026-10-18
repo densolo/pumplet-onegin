@@ -1,7 +1,9 @@
 package app.dc8.pumplet.onegin.copy
 
 import app.dc8.pumplet.onegin.config.Redactor
+import app.dc8.pumplet.onegin.db.Role
 import app.dc8.pumplet.onegin.db.Sql
+import app.dc8.pumplet.onegin.db.SqlError
 import app.dc8.pumplet.onegin.schema.TablePlan
 import app.dc8.pumplet.onegin.stages.Event
 import app.dc8.pumplet.onegin.stages.EventSink
@@ -173,9 +175,11 @@ class CopyEngine(
                 return
             } catch (e: Exception) {
                 if (cancel.get()) break
-                lastError = redactor.scrub(rootMessage(e))
+                lastError = redactor.scrub(SqlError.find(e)?.message ?: rootMessage(e))
                 val retrying = attempt < attempts
-                events.emit(Event.ChunkFailed(task.job.table, task.index, attempt, lastError, retrying))
+                // The full detail (SQL, where, stack trace) once retrying has given up.
+                val detail = if (retrying) null else SqlError.detailOf(e, redactor)
+                events.emit(Event.ChunkFailed(task.job.table, task.index, attempt, lastError, retrying, detail))
                 if (retrying) Thread.sleep(1000L * attempt)
             }
         }
@@ -184,7 +188,7 @@ class CopyEngine(
             return
         }
         if (tr.error == null) {
-            tr.error = "chunk ${task.index + 1}/${task.job.chunks.chunks}: $lastError"
+            tr.error = if (lastError?.contains(", chunk ") == true) lastError else "chunk ${task.index + 1}/${task.job.chunks.chunks}: $lastError"
             events.emit(Event.TableFinished(tr.job.table, false, tr.rows.get(), tr.bytes.get(), elapsed(tr), tr.error))
         }
     }
@@ -204,7 +208,10 @@ class CopyEngine(
             sink.write(task, pipe.input)
         } catch (e: Throwable) {
             pipe.fail(e)
-            runCatching { read.get() }
+            // If the source read failed first, the write only failed because its stream broke: report the source.
+            val readFailure = runCatching { read.get() }.exceptionOrNull()
+                ?.let { (it as? java.util.concurrent.ExecutionException)?.cause ?: it }
+            if (readFailure != null && readFailure !is PipeClosedException) throw readFailure
             throw e
         }
         val readStats = try {
@@ -224,42 +231,44 @@ class CopyEngine(
         sourcePool.connection.use { c ->
             var broken = false
             try {
-                c.autoCommit = true
-                inSnapshot(c)
-                val out = c.unwrap(PGConnection::class.java).copyAPI.copyOut(sql)
-                var messages = 0L
-                var bytes = 0L
-                val block = java.io.ByteArrayOutputStream(ChunkPipe.BLOCK_SIZE + 64 * 1024)
-                var pendingRows = 0L
-                try {
-                    while (true) {
-                        if (cancel.get()) throw InterruptedException("copy cancelled")
-                        val msg = out.readFromCopy() ?: break
-                        messages++
-                        pendingRows++
-                        block.write(msg)
-                        if (block.size() >= ChunkPipe.BLOCK_SIZE) {
-                            bytes += block.size()
-                            events.emit(Event.ChunkProgress(job.table, task.index, pendingRows, block.size().toLong()))
-                            pendingRows = 0
-                            pipe.put(block.toByteArray())
-                            block.reset()
+                return SqlError.on(c, Role.SOURCE, "table ${job.table}, chunk ${task.index + 1}/${job.chunks.chunks}", sql) {
+                    c.autoCommit = true
+                    inSnapshot(c)
+                    val out = c.unwrap(PGConnection::class.java).copyAPI.copyOut(sql)
+                    var messages = 0L
+                    var bytes = 0L
+                    val block = java.io.ByteArrayOutputStream(ChunkPipe.BLOCK_SIZE + 64 * 1024)
+                    var pendingRows = 0L
+                    try {
+                        while (true) {
+                            if (cancel.get()) throw InterruptedException("copy cancelled")
+                            val msg = out.readFromCopy() ?: break
+                            messages++
+                            pendingRows++
+                            block.write(msg)
+                            if (block.size() >= ChunkPipe.BLOCK_SIZE) {
+                                bytes += block.size()
+                                events.emit(Event.ChunkProgress(job.table, task.index, pendingRows, block.size().toLong()))
+                                pendingRows = 0
+                                pipe.put(block.toByteArray())
+                                block.reset()
+                            }
                         }
+                    } catch (e: Throwable) {
+                        if (out.isActive) runCatching { out.cancelCopy() }
+                        throw e
                     }
-                } catch (e: Throwable) {
-                    if (out.isActive) runCatching { out.cancelCopy() }
-                    throw e
+                    if (block.size() > 0) {
+                        bytes += block.size()
+                        events.emit(Event.ChunkProgress(job.table, task.index, pendingRows, block.size().toLong()))
+                        pipe.put(block.toByteArray())
+                    }
+                    pipe.finish()
+                    c.createStatement().use { it.execute("commit") }
+                    // Binary COPY sends the trailer as one more message.
+                    val rows = if (job.plan.binary) (messages - 1).coerceAtLeast(0) else messages
+                    ChunkStats(rows, bytes)
                 }
-                if (block.size() > 0) {
-                    bytes += block.size()
-                    events.emit(Event.ChunkProgress(job.table, task.index, pendingRows, block.size().toLong()))
-                    pipe.put(block.toByteArray())
-                }
-                pipe.finish()
-                c.createStatement().use { it.execute("commit") }
-                // Binary COPY sends the trailer as one more message.
-                val rows = if (job.plan.binary) (messages - 1).coerceAtLeast(0) else messages
-                return ChunkStats(rows, bytes)
             } catch (e: Throwable) {
                 broken = true
                 throw e

@@ -747,6 +747,29 @@ A new session never starts while another session still has objects dropped or pe
 never writes into target tables that already have rows. Both checks exist so that one job can't
 silently build on another job's half-finished work.
 
+## When a statement fails
+
+Every error from a SQL statement says which database it ran on (source or target, with URL
+and user), what it applied to (a table and chunk, a constraint, an index, a sequence) and
+PostgreSQL's message, all on one line. For example:
+
+```
+target database (jdbc:postgresql://localhost:5432/app as postgres), table app.orders, chunk 3/3: ERROR: new row for relation "orders" violates check constraint "small_ids"
+```
+
+Under that line, the output and the log show the failed SQL statement, PostgreSQL's error with
+its SQLSTATE code, and the full stack trace:
+
+- **A copy chunk:** after its last retry; earlier attempts get the one-line warning.
+- **A constraint, index or trigger that `enable` or `recover` can't restore:** right under its
+  `PENDING` line. If the data is the problem (a violated key, duplicates in a unique index), the
+  stack trace is left out; the statement and the reason are what matter.
+- **Any other failed statement** that stops a command, for example a `DROP CONSTRAINT` in
+  `disable`.
+
+A failed connection says which side it was and what to check: the password, `pg_hba.conf`,
+whether the database exists, or whether the server can be reached.
+
 ## Log file
 
 Every command that loads a job appends to a log next to the job file (`job.yaml` gives

@@ -3,6 +3,7 @@ package app.dc8.pumplet.onegin.cli
 import app.dc8.pumplet.onegin.config.ConfigException
 import app.dc8.pumplet.onegin.config.ConfigLoader
 import app.dc8.pumplet.onegin.config.JobConfig
+import app.dc8.pumplet.onegin.db.SqlError
 import app.dc8.pumplet.onegin.state.StateException
 import com.github.ajalt.clikt.core.CliktCommand
 import com.github.ajalt.clikt.core.CliktError
@@ -28,6 +29,11 @@ object Exit {
     const val USAGE = 2
     /** Stopped by the user (128 + SIGINT). */
     const val INTERRUPTED = 130
+}
+
+/** Prints a multi-line failure detail (where, SQL, stack trace) to [err], indented under the message it explains. */
+fun Io.printDetail(detail: String) {
+    detail.lines().forEach { err.println("    $it") }
 }
 
 /**
@@ -124,6 +130,7 @@ abstract class JobCommand(name: String, protected val io: Io, private val loader
         } catch (e: java.sql.SQLException) {
             log.error("$commandName failed", e)
             io.err.println("error: ${job.config.redactor.scrub(e.message)}")
+            SqlError.find(e)?.let { io.printDetail(SqlError.detailOf(it, job.config.redactor)) }
             Exit.FAILED
         } catch (e: Exception) {
             log.error("$commandName failed", e)

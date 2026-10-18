@@ -285,4 +285,28 @@ class ConstraintsIntegrationTest {
         val e = assertFailsWith<StateException> { enable(config()) }
         assertContains(e.message!!, "no open session for this job")
     }
+
+    @Test
+    fun `a failed restore says where and shows the SQL, with a stack trace unless the data is the problem`() {
+        val cfg = config()
+        disable(cfg)
+        dst("insert into $s.child values (1, 42, 'x')")        // orphan: a data problem
+        dst("alter table $s.child drop column code cascade")   // the unique index's column is gone: not a data problem
+        val details = mutableMapOf<String, String>()
+        SessionManager(cfg).begin("enable", SessionChoice.ResumeOnly).use { session ->
+            EnableStage(cfg, EventSink { e -> if (e is Event.ObjectChanged && e.detail != null) details[e.obj.name] = e.detail!! }).run(session, false)
+            session.succeed()
+        }
+        val fk = details.getValue("child_p_fkey")
+        assertContains(fk, "failed on the target database (jdbc:postgresql://localhost:55433/app as postgres), foreign key $s.child.child_p_fkey")
+        assertContains(fk, "SQL:\n  alter table \"$s\".\"child\" validate constraint \"child_p_fkey\"")
+        assertContains(fk, "(SQLSTATE 23503)")
+        assertFalse(fk.contains("stack trace:"), "a violated key is about the data")
+
+        val idx = details.getValue("child_code_idx")
+        assertContains(idx, "index $s.child.child_code_idx")
+        assertContains(idx, "CREATE UNIQUE INDEX child_code_idx ON $s.child USING btree (code)")
+        assertContains(idx, "(SQLSTATE 42703)")
+        assertContains(idx, "stack trace:")
+    }
 }

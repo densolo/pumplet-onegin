@@ -17,3 +17,19 @@ class DbConnectTest {
         assertContains(e.message!!, "is the target server running and reachable at that host and port?")
     }
 }
+
+class SqlErrorTest {
+    @Test
+    fun `message says where in one line, detail adds the SQL and the trace`() {
+        val cause = java.sql.SQLException("ERROR: relation \"x\" does not exist", "42P01")
+        val e = SqlError(Role.TARGET, "jdbc:postgresql://h/app as u", "table app.x", "select 1 from app.x", cause)
+        assertEquals("target database (jdbc:postgresql://h/app as u), table app.x: ERROR: relation \"x\" does not exist", e.message)
+        assertEquals("42P01", e.sqlState)
+        val d = e.detail
+        assertContains(d, "failed on the target database (jdbc:postgresql://h/app as u), table app.x\nSQL:\n  select 1 from app.x\nPostgreSQL: ERROR: relation \"x\" does not exist (SQLSTATE 42P01)\nstack trace:")
+        assertEquals(false, e.detail(withStackTrace = false).contains("stack trace"))
+        // Found behind wrappers; passes through on() unchanged.
+        val wrapped = RuntimeException("pipe", java.util.concurrent.ExecutionException(e))
+        assertEquals(e, SqlError.find(wrapped))
+    }
+}

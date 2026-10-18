@@ -1,6 +1,8 @@
 package app.dc8.pumplet.onegin.copy
 
+import app.dc8.pumplet.onegin.db.Role
 import app.dc8.pumplet.onegin.db.Sql
+import app.dc8.pumplet.onegin.db.SqlError
 import app.dc8.pumplet.onegin.state.ChunkDone
 import app.dc8.pumplet.onegin.state.Kind
 import app.dc8.pumplet.onegin.state.StateStore
@@ -44,13 +46,15 @@ class TargetSink(
         val job = task.job
         val format = if (job.plan.binary) "binary" else "text"
         val t0 = System.nanoTime()
+        val subject = chunkSubject(task)
         return inTransaction { c ->
-            if (job.truncateFirst) c.createStatement().use { it.execute("truncate ${Sql.table(job.table)}") }
+            truncateIfAsked(c, job, subject)
             val counting = CountingInput(input)
-            val rows = c.unwrap(PGConnection::class.java).copyAPI
-                .copyIn("copy ${Sql.table(job.table)} (${job.columnList}) from stdin (format $format)", counting, 64 * 1024)
-            store.put(c, session, Kind.CHUNK, ChunkDone.chunkKey(job.table, task.index),
-                ChunkDone(job.table, task.index, rows, counting.count.get(), elapsedMs(t0), runSeq))
+            val copy = "copy ${Sql.table(job.table)} (${job.columnList}) from stdin (format $format)"
+            val rows = SqlError.on(c, Role.TARGET, subject, copy) {
+                c.unwrap(PGConnection::class.java).copyAPI.copyIn(copy, counting, 64 * 1024)
+            }
+            recordChunk(c, task, ChunkDone(job.table, task.index, rows, counting.count.get(), elapsedMs(t0), runSeq))
             rows
         }
     }
@@ -66,12 +70,14 @@ class TargetSink(
         val t0 = System.nanoTime()
         var rows = 0L
         var bytes = 0L
+        val subject = chunkSubject(task)
         inTransaction { c ->
-            if (job.truncateFirst) c.createStatement().use { it.execute("truncate ${Sql.table(job.table)}") }
+            truncateIfAsked(c, job, subject)
             val srcLo = source.unwrap(PGConnection::class.java).largeObjectAPI
             val dstLo = c.unwrap(PGConnection::class.java).largeObjectAPI
             val buf = ByteArray(64 * 1024)
-            source.prepareStatement(select).use { q ->
+            // Reading is on the source; inserts and large objects (wrapped inside) on the target.
+            SqlError.on(source, Role.SOURCE, subject, select) { source.prepareStatement(select).use { q ->
                 q.fetchSize = 1000
                 c.prepareStatement(insert).use { ins ->
                     q.executeQuery().use { rs ->
@@ -82,18 +88,21 @@ class TargetSink(
                             for (col in cols) {
                                 val v = row[col.name] ?: continue
                                 bytes += v.length
-                                if (col.largeObject) bytes += copyLargeObject(v.toLong(), c, srcLo, dstLo, buf)
+                                if (col.largeObject) {
+                                    bytes += SqlError.on(c, Role.TARGET, "$subject, large object $v", "lo_create($v) + copy of its contents") {
+                                        copyLargeObject(v.toLong(), c, srcLo, dstLo, buf)
+                                    }
+                                }
                             }
                             cols.forEachIndexed { i, col -> ins.setString(i + 1, row[col.name]) }
                             ins.addBatch()
-                            if (++rows % 500 == 0L) ins.executeBatch()
+                            if (++rows % 500 == 0L) SqlError.on(c, Role.TARGET, subject, insert) { ins.executeBatch() }
                         }
                     }
-                    ins.executeBatch()
+                    SqlError.on(c, Role.TARGET, subject, insert) { ins.executeBatch() }
                 }
-            }
-            store.put(c, session, Kind.CHUNK, ChunkDone.chunkKey(job.table, task.index),
-                ChunkDone(job.table, task.index, rows, bytes, elapsedMs(t0), runSeq))
+            } }
+            recordChunk(c, task, ChunkDone(job.table, task.index, rows, bytes, elapsedMs(t0), runSeq))
         }
         return ChunkStats(rows, bytes)
     }
@@ -125,28 +134,35 @@ class TargetSink(
 
     /** Moves sequences owned by the table's columns past its data (never back), analyzes it, and records it DONE. */
     override fun tableDone(job: TableJob) {
-        pool.connection.use { c ->
-            c.autoCommit = true
-            val owned = c.prepareStatement(
-                """
-                select a.attname, pg_get_serial_sequence(?, a.attname)
-                from pg_attribute a
-                where a.attrelid = cast(? as regclass) and a.attnum > 0 and not a.attisdropped
-                """.trimIndent()
-            ).use { ps ->
-                ps.setString(1, Sql.table(job.table))
-                ps.setString(2, Sql.table(job.table))
-                ps.executeQuery().use { rs -> buildList { while (rs.next()) rs.getString(2)?.let { add(rs.getString(1) to it) } } }
-            }
-            for ((col, seq) in owned) {
-                val max = c.createStatement().use { st ->
-                    st.executeQuery("select max(${Sql.ident(col)})::bigint from ${Sql.table(job.table)}").use { rs ->
-                        rs.next(); rs.getLong(1).takeUnless { rs.wasNull() }
-                    }
-                } ?: continue
-                Sequences.raise(c, seq, max)
-            }
-            c.createStatement().use { it.execute("analyze ${Sql.table(job.table)}") }
+        pool.connection.use { c -> tableDone(c, job) }
+    }
+
+    private fun tableDone(c: Connection, job: TableJob) {
+        val t = "table ${job.table}"
+        c.autoCommit = true
+        val owned = c.prepareStatement(
+            """
+            select a.attname, pg_get_serial_sequence(?, a.attname)
+            from pg_attribute a
+            where a.attrelid = cast(? as regclass) and a.attnum > 0 and not a.attisdropped
+            """.trimIndent()
+        ).use { ps ->
+            ps.setString(1, Sql.table(job.table))
+            ps.setString(2, Sql.table(job.table))
+            ps.executeQuery().use { rs -> buildList { while (rs.next()) rs.getString(2)?.let { add(rs.getString(1) to it) } } }
+        }
+        for ((col, seq) in owned) {
+            val maxSql = "select max(${Sql.ident(col)})::bigint from ${Sql.table(job.table)}"
+            val max = SqlError.on(c, Role.TARGET, "$t, column $col", maxSql) {
+                c.createStatement().use { st ->
+                    st.executeQuery(maxSql).use { rs -> rs.next(); rs.getLong(1).takeUnless { rs.wasNull() } }
+                }
+            } ?: continue
+            SqlError.on(c, Role.TARGET, "sequence $seq of $t", "select setval('$seq', $max, true)") { Sequences.raise(c, seq, max) }
+        }
+        val analyze = "analyze ${Sql.table(job.table)}"
+        SqlError.on(c, Role.TARGET, t, analyze) { c.createStatement().use { it.execute(analyze) } }
+        SqlError.on(c, Role.TARGET, "state of $t", "insert into ${store.table} (… kind 'table' …)") {
             val chunks = store.list(c, session, Kind.CHUNK, ChunkDone::class.java).filter { it.table == job.table }
             store.put(c, session, Kind.TABLE, job.table, TableProgress(
                 table = job.table, status = TableStatus.DONE, estRows = job.plan.estRows,
@@ -155,6 +171,20 @@ class TargetSink(
             ))
         }
     }
+
+    private fun chunkSubject(task: ChunkTask) = "table ${task.job.table}, chunk ${task.index + 1}/${task.job.chunks.chunks}"
+
+    private fun truncateIfAsked(c: Connection, job: TableJob, subject: String) {
+        if (!job.truncateFirst) return
+        val sql = "truncate ${Sql.table(job.table)}"
+        SqlError.on(c, Role.TARGET, subject, sql) { c.createStatement().use { it.execute(sql) } }
+    }
+
+    /** The chunk's "done" row, in the same transaction as its data. */
+    private fun recordChunk(c: Connection, task: ChunkTask, done: ChunkDone) =
+        SqlError.on(c, Role.TARGET, "state of ${chunkSubject(task)}", "insert into ${store.table} (… kind 'chunk' …)") {
+            store.put(c, session, Kind.CHUNK, ChunkDone.chunkKey(task.job.table, task.index), done)
+        }
 
     private fun <T> inTransaction(block: (Connection) -> T): T {
         val c = pool.connection

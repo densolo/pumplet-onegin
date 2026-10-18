@@ -12,16 +12,20 @@ class LoggingEventSink(private val next: EventSink = EventSink.NONE) : EventSink
             is Event.StageFinished -> log.info("stage {} finished: {}", event.stage.label, event.summary ?: "done")
             is Event.ObjectChanged -> event.obj.let {
                 log.info("{} {} {}.{}{}", it.status.name.lowercase(), it.kind.name.lowercase(), it.table, it.name, it.error?.let { e -> ": $e" } ?: "")
+                event.detail?.let { d -> log.error("{}", d) }
             }
             is Event.TableStarted -> log.info(
                 "table {} started: ~{} rows, {} chunk(s), {} committed earlier", event.table, event.estRows, event.chunks, event.chunksDone,
             )
             is Event.ChunkProgress -> Unit
             is Event.ChunkDone -> log.info("table {} chunk {} committed: {} rows, {} bytes", event.table, event.index + 1, event.rows, event.bytes)
-            is Event.ChunkFailed -> log.warn(
-                "table {} chunk {} attempt {} failed{}: {}", event.table, event.index + 1, event.attempt,
-                if (event.retrying) " (retrying)" else "", event.error,
-            )
+            is Event.ChunkFailed -> {
+                log.warn(
+                    "table {} chunk {} attempt {} failed{}: {}", event.table, event.index + 1, event.attempt,
+                    if (event.retrying) " (retrying)" else "", event.error,
+                )
+                event.detail?.let { log.error("{}", it) }
+            }
             is Event.TableFinished ->
                 if (event.ok) log.info("table {} done: {} rows, {} bytes in {} ms", event.table, event.rows, event.bytes, event.durationMs)
                 else log.error("table {} failed: {}", event.table, event.error)

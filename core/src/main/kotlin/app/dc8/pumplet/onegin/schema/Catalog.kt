@@ -1,5 +1,7 @@
 package app.dc8.pumplet.onegin.schema
 
+import app.dc8.pumplet.onegin.db.Role
+import app.dc8.pumplet.onegin.db.SqlError
 import java.sql.Connection
 
 data class Column(
@@ -54,14 +56,16 @@ data class Catalog(val schemas: Set<String>, val tables: Map<String, Table>)
  * Only reads; safe on a read-only source connection.
  */
 object CatalogReader {
-    fun read(c: Connection, schemas: List<String>): Catalog {
+    /** @param role which side [c] is, so a failing query says where it ran. */
+    fun read(c: Connection, schemas: List<String>, role: Role = Role.SOURCE): Catalog {
         // Schema-qualify every name that pg_get_*def and format_type print, so both sides compare equal.
         c.createStatement().use { it.execute("set search_path = pg_catalog") }
-        val existing = query(c, "select nspname from pg_namespace where nspname = any(?)", schemas) { it.getString(1) }.toSet()
+        val existing = query(c, role, "select nspname from pg_namespace where nspname = any(?)", schemas) { it.getString(1) }.toSet()
 
         data class Rel(val oid: Long, val schema: String, val name: String, val rows: Long, val readable: Boolean)
         val rels = query(
             c,
+            role,
             """
             select c.oid, n.nspname, c.relname, c.reltuples::bigint, has_table_privilege(c.oid, 'SELECT')
             from pg_class c join pg_namespace n on n.oid = c.relnamespace
@@ -72,6 +76,7 @@ object CatalogReader {
 
         val columns = query(
             c,
+            role,
             """
             select a.attrelid, a.attname, format_type(a.atttypid, a.atttypmod), t.typname, a.attnotnull,
                    pg_get_expr(d.adbin, d.adrelid), a.attidentity, a.attgenerated
@@ -101,6 +106,7 @@ object CatalogReader {
 
         val primaryKeys = query(
             c,
+            role,
             """
             select i.indrelid, a.attname
             from pg_index i
@@ -116,6 +122,7 @@ object CatalogReader {
 
         val constraints = query(
             c,
+            role,
             """
             select con.conrelid, con.conname, con.contype, pg_get_constraintdef(con.oid)
             from pg_constraint con
@@ -130,6 +137,7 @@ object CatalogReader {
 
         val indexes = query(
             c,
+            role,
             """
             select i.indrelid, ic.relname, pg_get_indexdef(i.indexrelid)
             from pg_index i
@@ -167,9 +175,11 @@ object CatalogReader {
     fun withoutIndexName(def: String): String =
         INDEX_NAME.find(def)?.let { def.replaceRange(it.range, "CREATE ${it.groupValues[1]}INDEX ON ") } ?: def
 
-    private fun <T> query(c: Connection, sql: String, schemas: List<String>, row: (java.sql.ResultSet) -> T): List<T> =
-        c.prepareStatement(sql).use { ps ->
-            ps.setArray(1, c.createArrayOf("text", schemas.toTypedArray()))
-            ps.executeQuery().use { rs -> buildList { while (rs.next()) add(row(rs)) } }
+    private fun <T> query(c: Connection, role: Role, sql: String, schemas: List<String>, row: (java.sql.ResultSet) -> T): List<T> =
+        SqlError.on(c, role, "reading the catalog of schemas ${schemas.joinToString(", ")}", sql) {
+            c.prepareStatement(sql).use { ps ->
+                ps.setArray(1, c.createArrayOf("text", schemas.toTypedArray()))
+                ps.executeQuery().use { rs -> buildList { while (rs.next()) add(row(rs)) } }
+            }
         }
 }

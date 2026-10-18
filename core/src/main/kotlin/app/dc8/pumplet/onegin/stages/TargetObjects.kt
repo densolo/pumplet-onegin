@@ -1,7 +1,9 @@
 package app.dc8.pumplet.onegin.stages
 
 import app.dc8.pumplet.onegin.config.Redactor
+import app.dc8.pumplet.onegin.db.Role
 import app.dc8.pumplet.onegin.db.Sql
+import app.dc8.pumplet.onegin.db.SqlError
 import app.dc8.pumplet.onegin.state.Kind
 import app.dc8.pumplet.onegin.state.ObjectKind
 import app.dc8.pumplet.onegin.state.ObjectStatus
@@ -81,40 +83,50 @@ class TargetObjects(
     fun drop(obj: SavedObject) {
         val saved = obj.copy(status = ObjectStatus.DROPPED, error = null)
         transaction {
-            store.put(c, session, Kind.OBJECT, saved.key, saved)
-            exec(dropSql(saved))
+            record(saved)
+            exec(saved, dropSql(saved))
         }
         events.emit(Event.ObjectChanged(saved))
     }
+
+    /** Detail of the last restore failure (SQL, where, and the stack trace unless it was a data problem). */
+    private var failureDetail: String? = null
 
     /**
      * Restores [obj]; returns it with its new status. On failure the object is
      * left out of place and recorded as PENDING with the reason.
      */
     fun restore(obj: SavedObject): SavedObject {
+        failureDetail = null
         val result = try {
             when (obj.kind) {
                 ObjectKind.FOREIGN_KEY -> restoreForeignKey(obj)
                 else -> {
                     val done = obj.copy(status = ObjectStatus.RESTORED, error = null)
                     transaction {
-                        exec(restoreSql(obj))
-                        store.put(c, session, Kind.OBJECT, done.key, done)
+                        exec(obj, restoreSql(obj))
+                        record(done)
                     }
                     done
                 }
             }
         } catch (e: SQLException) {
-            markPending(obj, e.message ?: e.sqlState)
+            noteFailure(e)
+            markPending(obj, SqlError.find(e)?.pgMessage ?: e.message ?: e.sqlState)
         }
-        events.emit(Event.ObjectChanged(result))
+        events.emit(Event.ObjectChanged(result, failureDetail))
         return result
+    }
+
+    private fun noteFailure(e: SQLException) {
+        val err = SqlError.find(e)
+        failureDetail = redactor.scrub(err?.detail(withStackTrace = !err.dataProblem) ?: e.stackTraceToString())
     }
 
     /** Records [obj] as given up on: it stays out of place, and no longer blocks new sessions. */
     fun skip(obj: SavedObject): SavedObject {
         val skipped = obj.copy(status = ObjectStatus.SKIPPED)
-        transaction { store.put(c, session, Kind.OBJECT, skipped.key, skipped) }
+        transaction { record(skipped) }
         events.emit(Event.ObjectChanged(skipped))
         return skipped
     }
@@ -130,21 +142,22 @@ class TargetObjects(
         val alreadyNotValid = obj.definition.endsWith(" NOT VALID")
         val existing = constraintValidated(obj)
         if (existing == null) {
-            transaction { exec("alter table $t add constraint $n ${obj.definition}${if (alreadyNotValid) "" else " NOT VALID"}") }
+            transaction { exec(obj, "alter table $t add constraint $n ${obj.definition}${if (alreadyNotValid) "" else " NOT VALID"}") }
         }
         if (!alreadyNotValid && existing != true) {
             try {
-                transaction { exec("alter table $t validate constraint $n") }
+                transaction { exec(obj, "alter table $t validate constraint $n") }
             } catch (e: SQLException) {
+                noteFailure(e)
                 val violations = if (e.sqlState == FOREIGN_KEY_VIOLATION) countViolations(obj) else null
-                transaction { exec("alter table $t drop constraint $n") }
+                transaction { exec(obj, "alter table $t drop constraint $n") }
                 val why = violations?.let { "%,d row(s) in ${obj.table} have no matching row in the referenced table".format(it) }
-                    ?: (e.message ?: e.sqlState)
+                    ?: (SqlError.find(e)?.pgMessage ?: e.message ?: e.sqlState)
                 return markPending(obj, why)
             }
         }
         val done = obj.copy(status = ObjectStatus.RESTORED, error = null)
-        transaction { store.put(c, session, Kind.OBJECT, done.key, done) }
+        transaction { record(done) }
         return done
     }
 
@@ -198,9 +211,23 @@ class TargetObjects(
 
     private fun markPending(obj: SavedObject, error: String): SavedObject {
         val pending = obj.copy(status = ObjectStatus.PENDING, error = redactor.scrub(error))
-        transaction { store.put(c, session, Kind.OBJECT, pending.key, pending) }
+        transaction { record(pending) }
         return pending
     }
+
+    /** "foreign key app.orders.orders_customer_id_fkey", for error messages. */
+    private fun subject(o: SavedObject) = "${o.kind.name.lowercase().replace('_', ' ')} ${o.table}.${o.name}"
+
+    /** Runs a statement on [o], reporting a failure with the database, the object and the SQL. */
+    private fun exec(o: SavedObject, sql: String) {
+        SqlError.on(c, Role.TARGET, subject(o), sql) { c.createStatement().use { it.execute(sql) } }
+    }
+
+    /** Writes [o]'s state row (in the caller's transaction). */
+    private fun record(o: SavedObject) =
+        SqlError.on(c, Role.TARGET, "state of ${subject(o)}", "insert into ${store.table} (… kind 'object' …)") {
+            store.put(c, session, Kind.OBJECT, o.key, o)
+        }
 
     private fun dropSql(o: SavedObject) = when (o.kind) {
         ObjectKind.FOREIGN_KEY -> "alter table ${Sql.table(o.table)} drop constraint ${Sql.ident(o.name)}"
@@ -221,9 +248,6 @@ class TargetObjects(
         }
     }
 
-    private fun exec(sql: String) {
-        c.createStatement().use { it.execute(sql) }
-    }
 
     private fun <T> transaction(block: () -> T): T = try {
         block().also { c.commit() }
@@ -233,9 +257,11 @@ class TargetObjects(
     }
 
     private fun <T> query(sql: String, tables: List<String>, row: (java.sql.ResultSet) -> T): List<T> =
-        c.prepareStatement(sql).use { ps ->
-            ps.setArray(1, c.createArrayOf("text", tables.toTypedArray()))
-            ps.executeQuery().use { rs -> buildList { while (rs.next()) add(row(rs)) } }
+        SqlError.on(c, Role.TARGET, "reading constraints, indexes and triggers of ${tables.size} table(s)", sql) {
+            c.prepareStatement(sql).use { ps ->
+                ps.setArray(1, c.createArrayOf("text", tables.toTypedArray()))
+                ps.executeQuery().use { rs -> buildList { while (rs.next()) add(row(rs)) } }
+            }
         }.also { c.commit() }
 
     companion object {
