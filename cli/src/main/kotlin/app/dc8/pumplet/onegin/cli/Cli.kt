@@ -121,6 +121,10 @@ abstract class JobCommand(name: String, protected val io: Io, private val loader
             log.error("{} failed: {}", commandName, e.message)
             io.err.println("error: ${job.config.redactor.scrub(e.message)}")
             Exit.FAILED
+        } catch (e: java.sql.SQLException) {
+            log.error("$commandName failed", e)
+            io.err.println("error: ${job.config.redactor.scrub(e.message)}")
+            Exit.FAILED
         } catch (e: Exception) {
             log.error("$commandName failed", e)
             io.err.println("error: ${job.config.redactor.scrub(e.toString())}")

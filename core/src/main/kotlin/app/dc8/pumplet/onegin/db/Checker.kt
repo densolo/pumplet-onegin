@@ -31,7 +31,7 @@ data class SourceCheck(
 
     val problems: List<String>
         get() = buildList {
-            connection.error?.let { add("cannot connect or query source: $it") }
+            connection.error?.let { add(it) }
             missingSchemas.forEach { add("source schema '$it' does not exist") }
             selected.filter { !it.readable }.forEach { add("source user has no SELECT privilege on ${it.qualified}") }
             if (noMatch) add("no source tables match tables.include/exclude")
@@ -40,7 +40,7 @@ data class SourceCheck(
 
 data class TargetCheck(val connection: Connected, val alreadyPresent: Int = 0, val selectedCount: Int = 0) {
     val problems: List<String>
-        get() = listOfNotNull(connection.error?.let { "cannot connect or query target: $it" })
+        get() = listOfNotNull(connection.error)
 }
 
 /**
@@ -62,8 +62,10 @@ class Checker(private val config: JobConfig) {
             val version = "${c.metaData.databaseProductName} ${c.metaData.databaseProductVersion}"
             Connected(Db.describe(db), version, null) to block(c)
         }
-    } catch (e: SQLException) {
+    } catch (e: DbConnectException) {
         Connected(Db.describe(db), null, redactor.scrub(e.message)) to null
+    } catch (e: SQLException) {
+        Connected(Db.describe(db), null, redactor.scrub("query on the ${role.label} database failed: ${e.message}")) to null
     }
 
     private fun checkSource(): SourceCheck {

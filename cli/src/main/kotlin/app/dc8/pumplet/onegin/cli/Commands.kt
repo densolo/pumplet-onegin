@@ -48,7 +48,10 @@ class CheckCommand(io: Io, loader: ConfigLoader) : JobCommand("check", io, loade
         val dst = report.target
         connection("target", dst.connection)
         if (dst.connection.error == null) {
-            out.println("  selected tables already present on target: ${dst.alreadyPresent} of ${dst.selectedCount}")
+            out.println(
+                if (src.connection.error != null) "  (tables not compared: the source isn't reachable)"
+                else "  selected tables already present on target: ${dst.alreadyPresent} of ${dst.selectedCount}"
+            )
         }
 
         out.println()
@@ -59,7 +62,7 @@ class CheckCommand(io: Io, loader: ConfigLoader) : JobCommand("check", io, loade
     private fun connection(role: String, c: Connected) {
         io.out.println()
         io.out.println("$role: ${c.description}")
-        if (c.error != null) io.out.println("  PROBLEM: cannot connect or query $role: ${c.error}")
+        if (c.error != null) io.out.println("  PROBLEM: ${c.error}")
         else io.out.println("  connected: ${c.serverVersion}")
     }
 }

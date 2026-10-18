@@ -43,6 +43,9 @@ abstract class SessionCommand(name: String, io: Io, loader: ConfigLoader) : JobC
                 e.message
             } catch (e: StateException) {
                 e.message
+            } catch (e: java.sql.SQLException) {
+                log.error("$commandName failed", e)
+                config.redactor.scrub(e.message)
             } catch (e: Exception) {
                 log.error("$commandName failed", e)
                 config.redactor.scrub(e.toString())

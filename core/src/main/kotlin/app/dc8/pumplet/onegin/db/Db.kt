@@ -11,15 +11,42 @@ import java.util.Properties
 /** Which side of the copy a connection belongs to. The source is never written to. */
 enum class Role(val label: String) { SOURCE("source"), TARGET("target") }
 
+/**
+ * Connecting to one side failed. Says which database, where, and what to check, so
+ * an error like "password authentication failed" is never ambiguous.
+ */
+class DbConnectException(val role: Role, where: String, hint: String?, cause: java.sql.SQLException) :
+    java.sql.SQLException(
+        "can't connect to the ${role.label} database ($where): ${cause.message}" + (hint?.let { "; $it" } ?: ""),
+        cause.sqlState,
+        cause,
+    )
+
 object Db {
     /**
      * Opens a single connection; the password goes only into the driver properties, never into the URL.
      * Source connections are always read-only; [readOnly] makes a target connection read-only too.
      */
     fun connect(db: DbConfig, role: Role, readOnly: Boolean = role == Role.SOURCE): Connection {
-        val c = DriverManager.getConnection(db.url, properties(db))
+        val c = try {
+            DriverManager.getConnection(db.url, properties(db))
+        } catch (e: java.sql.SQLException) {
+            throw DbConnectException(role, describe(db), hint(db, role, e), e)
+        }
         if (role == Role.SOURCE || readOnly) makeReadOnly(c)
         return c
+    }
+
+    /** What to check, by PostgreSQL error code. */
+    private fun hint(db: DbConfig, role: Role, e: java.sql.SQLException): String? {
+        val side = role.label
+        return when (e.sqlState) {
+            "28P01" -> "check the $side password" + (db.password?.let { " (secret '${it.name}' in the secrets file)" } ?: " (none is set: $side.password)")
+            "28000" -> "the $side user isn't allowed to log in, or pg_hba.conf doesn't allow this connection"
+            "3D000" -> "the database in the $side URL doesn't exist"
+            "08001", "08004", "08006" -> "is the $side server running and reachable at that host and port?"
+            else -> null
+        }
     }
 
     /**

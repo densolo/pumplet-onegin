@@ -83,8 +83,17 @@ class DockerIntegrationTest {
         val s = secrets("src: \"wrong-src-password\"\ndst: \"wrong-dst-password\"\n")
         val (code, out, err) = run("check", "--config", testEnv.resolve("job.yaml").toString(), "--secrets", s.toString())
         assertEquals(1, code)
-        assertContains(out, "cannot connect or query source")
-        assertContains(out, "cannot connect or query target")
+        assertContains(out, "can't connect to the source database (jdbc:postgresql://localhost:55432/app as app_ro): " +
+            "FATAL: password authentication failed for user \"app_ro\"; check the source password (secret 'src' in the secrets file)")
+        assertContains(out, "can't connect to the target database (jdbc:postgresql://localhost:55433/app as postgres)")
+        assertContains(out, "check the target password (secret 'dst' in the secrets file)")
+
+        // Every command says which side failed, not just check.
+        val (dcode, dout, derr) = run("diff", "--config", testEnv.resolve("job.yaml").toString(), "--secrets", s.toString())
+        assertEquals(1, dcode)
+        assertContains(derr, "error: can't connect to the source database (jdbc:postgresql://localhost:55432/app as app_ro)")
+        assertFalse(derr.contains("PSQLException"))
+        assertFalse((dout + derr).contains("wrong-src-password"))
         assertFalse((out + err).contains("wrong-src-password"))
         assertFalse((out + err).contains("wrong-dst-password"))
     }
