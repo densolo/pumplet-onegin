@@ -11,6 +11,13 @@ import androidx.compose.material.LocalMinimumInteractiveComponentEnforcement
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.foundation.HorizontalScrollbar
+import androidx.compose.foundation.ScrollbarStyle
+import androidx.compose.foundation.VerticalScrollbar
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.rememberScrollbarAdapter
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -42,8 +49,10 @@ import androidx.compose.material.DropdownMenuItem
 import androidx.compose.material.MaterialTheme
 import androidx.compose.material.OutlinedButton
 import androidx.compose.material.Surface
-import androidx.compose.material.Tab
-import androidx.compose.material.TabRow
+import androidx.compose.material.Badge
+import androidx.compose.material.BadgedBox
+import androidx.compose.material.NavigationRail
+import androidx.compose.material.NavigationRailItem
 import androidx.compose.material.Text
 import androidx.compose.material.TextButton
 import androidx.compose.runtime.Composable
@@ -71,11 +80,20 @@ private val Muted = Color(0xFF6B6B6B)
 fun App(state: AppState) {
     LaunchedEffect(Unit) { state.refresh() }
     Row(Modifier.fillMaxSize()) {
-        ProfileList(state, Modifier.width(250.dp).fillMaxHeight())
+        Rail(state)
         Divider(Modifier.fillMaxHeight().width(1.dp))
         Box(Modifier.weight(1f).fillMaxHeight()) {
-            val draft = state.draft
-            if (draft == null) EmptyHint(state) else ProfilePane(state, draft)
+            when (state.screen) {
+                Screen.PROFILES -> Row(Modifier.fillMaxSize()) {
+                    ProfileList(state, Modifier.width(250.dp).fillMaxHeight())
+                    Divider(Modifier.fillMaxHeight().width(1.dp))
+                    Box(Modifier.weight(1f).fillMaxHeight()) {
+                        val draft = state.draft
+                        if (draft == null) EmptyHint(state) else ProfilePane(state, draft)
+                    }
+                }
+                Screen.JOBS -> JobsScreen(state)
+            }
         }
     }
     state.message?.let { msg ->
@@ -151,38 +169,37 @@ private fun EmptyHint(state: AppState) {
 private fun ProfilePane(state: AppState, draft: Profile) {
     Column(Modifier.fillMaxSize().padding(8.dp)) {
         Toolbar(state)
-        Spacer(Modifier.height(6.dp))
-        TabRow(selectedTabIndex = state.tab.ordinal, backgroundColor = Color.Transparent, contentColor = MaterialTheme.colors.primary) {
-            for (t in PaneTab.entries) {
-                Tab(selected = state.tab == t, onClick = { state.tab = t }, text = { Text(tabLabel(state, t)) })
-            }
-        }
-        Spacer(Modifier.height(6.dp))
-        Box(Modifier.weight(1f).fillMaxWidth()) {
-            when (state.tab) {
-                PaneTab.PROFILE -> ProfileForm(state, draft, Modifier.widthIn(max = 720.dp).fillMaxHeight())
-                PaneTab.OUTPUT -> OutputPane(state, Modifier.fillMaxSize())
-            }
-        }
+        Spacer(Modifier.height(10.dp))
+        ProfileForm(state, draft, Modifier.widthIn(max = 720.dp).weight(1f))
     }
 }
 
-/** "Profile •" with unsaved changes; "Output (running…)" or "Output (N lines)". */
-private fun tabLabel(state: AppState, t: PaneTab): String = when (t) {
-    PaneTab.PROFILE -> if (state.dirty) "Profile •" else "Profile"
-    PaneTab.OUTPUT -> {
-        val name = state.selected
-        when {
-            name != null && state.running?.first == name -> "Output (running…)"
-            name != null && state.output(name).isNotEmpty() -> "Output (${state.output(name).size} lines)"
-            else -> "Output"
+/** The narrow bar on the far left: one icon per section; Jobs shows how many are running. */
+@Composable
+private fun Rail(state: AppState) {
+    NavigationRail(backgroundColor = Color(0xFFEDEDED), elevation = 0.dp) {
+        Spacer(Modifier.height(8.dp))
+        for (s in Screen.entries) {
+            NavigationRailItem(
+                selected = state.screen == s,
+                onClick = { state.screen = s },
+                icon = {
+                    val running = if (s == Screen.JOBS) state.jobs.count { it.status == JobStatus.RUNNING } else 0
+                    BadgedBox(badge = { if (running > 0) Badge { Text("$running") } }) {
+                        Text(s.icon, fontSize = 20.sp)
+                    }
+                },
+                label = { Text(s.label, fontSize = 12.sp) },
+                selectedContentColor = MaterialTheme.colors.primary,
+                unselectedContentColor = Muted,
+            )
         }
     }
 }
 
 @Composable
 private fun Toolbar(state: AppState) {
-    val running = state.running
+    val running = state.runningJob
     val canRun = running == null && state.selected != null && !state.dirty
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         for (cmd in Command.toolbar) {
@@ -205,7 +222,9 @@ private fun Toolbar(state: AppState) {
         }
         Spacer(Modifier.weight(1f))
         if (running != null) {
-            Text("${running.second.label} running for ${running.first}…", color = Amber)
+            TextButton(onClick = { state.selectedJob = running; state.screen = Screen.JOBS }) {
+                Text("${running.title} running for ${running.profile}…", color = Amber)
+            }
             Button(onClick = { state.stop() }) { Text("Stop") }
         } else if (state.dirty) {
             Text("unsaved changes: save to run commands", color = Amber)
@@ -221,74 +240,78 @@ private fun ProfileForm(state: AppState, p: Profile, modifier: Modifier) {
     }
     // Compact rows: no 48dp minimum touch target around checkboxes.
     CompositionLocalProvider(LocalMinimumInteractiveComponentEnforcement provides false) {
-        Column(modifier.verticalScroll(rememberScrollState()).padding(end = 8.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                Button(onClick = { state.save() }, enabled = state.dirty && state.running == null) { Text("Save") }
-                OutlinedButton(onClick = { state.revert() }, enabled = state.dirty && state.saved != null) { Text("Revert") }
-                OutlinedButton(onClick = { state.duplicate() }, enabled = !state.dirty) { Text("Duplicate") }
-                OutlinedButton(onClick = { state.confirmDelete = true }, enabled = state.selected != null && state.running == null) { Text("Delete") }
+        val formScroll = rememberScrollState()
+        Box(modifier) {
+            Column(Modifier.verticalScroll(formScroll).padding(end = 14.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Button(onClick = { state.save() }, enabled = state.dirty && state.runningJob == null) { Text("Save") }
+                    OutlinedButton(onClick = { state.revert() }, enabled = state.dirty && state.saved != null) { Text("Revert") }
+                    OutlinedButton(onClick = { state.duplicate() }, enabled = !state.dirty) { Text("Duplicate") }
+                    OutlinedButton(onClick = { state.confirmDelete = true }, enabled = state.selected != null && state.runningJob == null) { Text("Delete") }
+                }
+                ValidationView(state.validationOf(state.selected), saved = state.saved != null)
+
+                TextRow("Profile name", p.name) { v -> update { it.copy(name = v.trim()) } }
+
+                Section("Source (read-only)")
+                TextRow("JDBC URL", p.sourceUrl) { v -> update { it.copy(sourceUrl = v) } }
+                TextRow("User", p.sourceUser) { v -> update { it.copy(sourceUser = v) } }
+                TextRow("Password", p.sourcePassword, password = true) { v -> update { it.copy(sourcePassword = v) } }
+                TextRow("Schemas", p.schemas.joinToString(", "), placeholder = "comma-separated") { v -> update { it.copy(schemas = splitList(v)) } }
+
+                Section("Target")
+                TextRow("JDBC URL", p.targetUrl) { v -> update { it.copy(targetUrl = v) } }
+                TextRow("User", p.targetUser) { v -> update { it.copy(targetUser = v) } }
+                TextRow("Password", p.targetPassword, password = true) { v -> update { it.copy(targetPassword = v) } }
+
+                Section("Tables")
+                TextRow("Include", p.include.joinToString(", "), placeholder = "schema.table globs, comma-separated; empty = all") { v ->
+                    update { it.copy(include = splitList(v)) }
+                }
+                TextRow("Exclude", p.exclude.joinToString(", "), placeholder = "e.g. app.audit_*") { v -> update { it.copy(exclude = splitList(v)) } }
+
+                Spacer(Modifier.height(6.dp))
+                val customised = p.customisedAdvanced()
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = { state.showAdvanced = !state.showAdvanced }, contentPadding = PaddingValues(horizontal = 0.dp, vertical = 2.dp)) {
+                        Text(if (state.showAdvanced) "▾ Hide advanced settings" else "▸ Advanced settings", fontSize = 13.sp)
+                    }
+                    if (!state.showAdvanced && customised.isNotEmpty()) {
+                        Text("  changed: ${customised.joinToString(", ")}", color = Amber, fontSize = 12.sp)
+                    }
+                }
+                if (state.showAdvanced) {
+                    Section("Tuning")
+                    NumberRow("Readers", p.readers.toLong(), "source connections; more hide a remote source's latency") { v -> update { it.copy(readers = v.toInt()) } }
+                    NumberRow("Writers", p.writers.toLong(), "target connections") { v -> update { it.copy(writers = v.toInt()) } }
+                    NumberRow("Rows per chunk", p.rowsPerChunk, "one commit per chunk") { v -> update { it.copy(rowsPerChunk = v) } }
+                    NumberRow("Min rows to split", p.minRowsToSplit, "smaller tables are one chunk") { v -> update { it.copy(minRowsToSplit = v) } }
+                    NumberRow("Buffer", p.maxMemoryMb.toLong(), "MB, between readers and writers") { v -> update { it.copy(maxMemoryMb = v.toInt()) } }
+
+                    Section("During the load (put back by enable)")
+                    CheckRow("Drop foreign keys", p.dropForeignKeys, "needed: tables and chunks load in parallel, children may come before parents") { v ->
+                        update { it.copy(dropForeignKeys = v) }
+                    }
+                    CheckRow("Drop secondary indexes", p.dropSecondaryIndexes, "plain (non-constraint) indexes, rebuilt once after the load; pays off for big tables") { v ->
+                        update { it.copy(dropSecondaryIndexes = v) }
+                    }
+                    CheckRow("Disable user triggers", p.disableUserTriggers, "so triggers don't fire for copied rows") { v -> update { it.copy(disableUserTriggers = v) } }
+
+                    Section("Other")
+                    CheckRow("Raise sequences", p.raiseSequences, "to the source's values if lower, so local inserts don't reuse source ids") { v ->
+                        update { it.copy(raiseSequences = v) }
+                    }
+                    CheckRow("Allow type differences", p.allowTypeDifferences, "copy differing columns as text instead of blocking") { v ->
+                        update { it.copy(allowTypeDifferences = v) }
+                    }
+                    TextRow("State table", p.stateTable, placeholder = "default: <first schema>.pumplet_onegin_state") { v -> update { it.copy(stateTable = v.trim()) } }
+                }
+                state.selected?.let {
+                    Spacer(Modifier.height(4.dp))
+                    Text("Files: ${state.store.dir(it)}", color = Muted, fontSize = 11.sp)
+                }
             }
-            ValidationView(state.validationOf(state.selected), saved = state.saved != null)
-
-            TextRow("Profile name", p.name) { v -> update { it.copy(name = v.trim()) } }
-
-            Section("Source (read-only)")
-            TextRow("JDBC URL", p.sourceUrl) { v -> update { it.copy(sourceUrl = v) } }
-            TextRow("User", p.sourceUser) { v -> update { it.copy(sourceUser = v) } }
-            TextRow("Password", p.sourcePassword, password = true) { v -> update { it.copy(sourcePassword = v) } }
-            TextRow("Schemas", p.schemas.joinToString(", "), placeholder = "comma-separated") { v -> update { it.copy(schemas = splitList(v)) } }
-
-            Section("Target")
-            TextRow("JDBC URL", p.targetUrl) { v -> update { it.copy(targetUrl = v) } }
-            TextRow("User", p.targetUser) { v -> update { it.copy(targetUser = v) } }
-            TextRow("Password", p.targetPassword, password = true) { v -> update { it.copy(targetPassword = v) } }
-
-            Section("Tables")
-            TextRow("Include", p.include.joinToString(", "), placeholder = "schema.table globs, comma-separated; empty = all") { v ->
-                update { it.copy(include = splitList(v)) }
-            }
-            TextRow("Exclude", p.exclude.joinToString(", "), placeholder = "e.g. app.audit_*") { v -> update { it.copy(exclude = splitList(v)) } }
-
-            Spacer(Modifier.height(6.dp))
-            val customised = p.customisedAdvanced()
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = { state.showAdvanced = !state.showAdvanced }, contentPadding = PaddingValues(horizontal = 0.dp, vertical = 2.dp)) {
-                    Text(if (state.showAdvanced) "▾ Hide advanced settings" else "▸ Advanced settings", fontSize = 13.sp)
-                }
-                if (!state.showAdvanced && customised.isNotEmpty()) {
-                    Text("  changed: ${customised.joinToString(", ")}", color = Amber, fontSize = 12.sp)
-                }
-            }
-            if (state.showAdvanced) {
-                Section("Tuning")
-                NumberRow("Readers", p.readers.toLong(), "source connections; more hide a remote source's latency") { v -> update { it.copy(readers = v.toInt()) } }
-                NumberRow("Writers", p.writers.toLong(), "target connections") { v -> update { it.copy(writers = v.toInt()) } }
-                NumberRow("Rows per chunk", p.rowsPerChunk, "one commit per chunk") { v -> update { it.copy(rowsPerChunk = v) } }
-                NumberRow("Min rows to split", p.minRowsToSplit, "smaller tables are one chunk") { v -> update { it.copy(minRowsToSplit = v) } }
-                NumberRow("Buffer", p.maxMemoryMb.toLong(), "MB, between readers and writers") { v -> update { it.copy(maxMemoryMb = v.toInt()) } }
-
-                Section("During the load (put back by enable)")
-                CheckRow("Drop foreign keys", p.dropForeignKeys, "needed: tables and chunks load in parallel, children may come before parents") { v ->
-                    update { it.copy(dropForeignKeys = v) }
-                }
-                CheckRow("Drop secondary indexes", p.dropSecondaryIndexes, "plain (non-constraint) indexes, rebuilt once after the load; pays off for big tables") { v ->
-                    update { it.copy(dropSecondaryIndexes = v) }
-                }
-                CheckRow("Disable user triggers", p.disableUserTriggers, "so triggers don't fire for copied rows") { v -> update { it.copy(disableUserTriggers = v) } }
-
-                Section("Other")
-                CheckRow("Raise sequences", p.raiseSequences, "to the source's values if lower, so local inserts don't reuse source ids") { v ->
-                    update { it.copy(raiseSequences = v) }
-                }
-                CheckRow("Allow type differences", p.allowTypeDifferences, "copy differing columns as text instead of blocking") { v ->
-                    update { it.copy(allowTypeDifferences = v) }
-                }
-                TextRow("State table", p.stateTable, placeholder = "default: <first schema>.pumplet_onegin_state") { v -> update { it.copy(stateTable = v.trim()) } }
-            }
-            state.selected?.let {
-                Spacer(Modifier.height(4.dp))
-                Text("Files: ${state.store.dir(it)}", color = Muted, fontSize = 11.sp)
-            }
+            VerticalScrollbar(rememberScrollbarAdapter(formScroll), Modifier.align(Alignment.CenterEnd).fillMaxHeight())
         }
     }
 }
@@ -400,36 +423,64 @@ private fun CompactField(
     )
 }
 
+/** Command output: monospace, coloured by stream, scrolling both ways, following new lines. */
 @Composable
-private fun OutputPane(state: AppState, modifier: Modifier) {
-    val name = state.selected
+fun OutputView(lines: List<OutputLine>, modifier: Modifier) {
     Column(modifier) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Spacer(Modifier.weight(1f))
-            TextButton(onClick = { state.clearOutput() }, enabled = name != null) { Text("Clear") }
-        }
         Surface(color = Color(0xFF1E1E1E), modifier = Modifier.fillMaxSize()) {
-            if (name == null) return@Surface
-            val lines = state.output(name)
             val listState = rememberLazyListState()
+            val hScroll = rememberScrollState()
             LaunchedEffect(lines.size) { if (lines.isNotEmpty()) listState.scrollToItem(lines.size - 1) }
-            // Lines stay whole (the CLI aligns columns); the pane scrolls sideways instead of wrapping.
-            SelectionContainer(Modifier.padding(8.dp).horizontalScroll(rememberScrollState())) {
-                LazyColumn(state = listState, modifier = Modifier.width(1600.dp)) {
-                    items(lines) { line ->
-                        val color = when {
-                            line.stream == OutputLine.Stream.INFO -> Color(0xFF7FB2F0)
-                            line.text.startsWith("warning:") -> Color(0xFFE5B567)
-                            line.stream == OutputLine.Stream.ERR || "PROBLEM" in line.text || "FAILED" in line.text || "PENDING" in line.text -> Color(0xFFF08080)
-                            else -> Color(0xFFDDDDDD)
+            // Lines stay whole (the CLI aligns columns): the content is as wide as the longest line,
+            // measured in the monospace font, and the pane scrolls sideways instead of wrapping.
+            val measurer = rememberTextMeasurer()
+            val density = LocalDensity.current
+            val charWidth = remember(measurer) { with(density) { measurer.measure("M", OutputText).size.width.toDp() } }
+            val longest = lines.maxOfOrNull { it.text.length } ?: 0
+            BoxWithConstraints(Modifier.fillMaxSize()) {
+                val contentWidth = maxOf(maxWidth - Gutter * 2, charWidth * longest + 8.dp)
+                SelectionContainer(Modifier.fillMaxSize().padding(start = 8.dp, top = 8.dp, end = Gutter, bottom = Gutter).horizontalScroll(hScroll)) {
+                    LazyColumn(state = listState, modifier = Modifier.width(contentWidth)) {
+                        items(lines) { line ->
+                            val color = when {
+                                line.stream == OutputLine.Stream.INFO -> Color(0xFF7FB2F0)
+                                line.text.startsWith("warning:") -> Color(0xFFE5B567)
+                                line.stream == OutputLine.Stream.ERR || "PROBLEM" in line.text || "FAILED" in line.text || "PENDING" in line.text -> Color(0xFFF08080)
+                                else -> Color(0xFFDDDDDD)
+                            }
+                            Text(line.text, color = color, style = OutputText, softWrap = false, maxLines = 1)
                         }
-                        Text(line.text, color = color, fontFamily = FontFamily.Monospace, fontSize = 12.sp, softWrap = false, maxLines = 1)
                     }
                 }
+                VerticalScrollbar(
+                    adapter = rememberScrollbarAdapter(listState),
+                    style = DarkScrollbar,
+                    modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight().padding(bottom = Gutter),
+                )
+                HorizontalScrollbar(
+                    adapter = rememberScrollbarAdapter(hScroll),
+                    style = DarkScrollbar,
+                    modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(end = Gutter),
+                )
             }
         }
     }
 }
+
+private val OutputText = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+
+/** Room kept free for the scrollbars along the right and bottom edges of the output. */
+private val Gutter = 12.dp
+
+/** Scrollbars that show on the dark output background. */
+private val DarkScrollbar = ScrollbarStyle(
+    minimalHeight = 16.dp,
+    thickness = 8.dp,
+    shape = RoundedCornerShape(4.dp),
+    hoverDurationMillis = 300,
+    unhoverColor = Color.White.copy(alpha = 0.25f),
+    hoverColor = Color.White.copy(alpha = 0.5f),
+)
 
 private fun splitList(v: String) = v.split(',').map { it.trim() }.filter { it.isNotEmpty() }
 

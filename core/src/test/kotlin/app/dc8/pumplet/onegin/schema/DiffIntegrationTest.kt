@@ -176,6 +176,24 @@ class DiffIntegrationTest {
 
         assertEquals(listOf("$schema.target_only"), r.targetOnly)
         assertTrue(r.blocking)
+
+        // The comparison rows agree with the findings, and identical objects are there too.
+        fun row(table: String, name: String) = r.comparisons.single { it.table == "$schema.$table" && it.name == name }
+        assertEquals(Verdict.SAME, row("same", "v").verdict)
+        assertEquals(Verdict.SAME, row("same", "$schema.same").verdict)
+        assertEquals(Verdict.COMPATIBLE, row("cols", "widen").verdict)
+        assertEquals("character varying(10)" to "character varying(20)", row("cols", "widen").source to row("cols", "widen").target)
+        assertEquals(Verdict.BLOCKER, row("cols", "retype").verdict)
+        assertEquals(Verdict.COMPATIBLE, row("cols", "gone").verdict)
+        assertEquals(null, row("cols", "gone").target)
+        assertEquals(Verdict.BLOCKER, row("blocked", "must").verdict)
+        assertEquals("integer not null", row("blocked", "must").target)
+        assertEquals(Verdict.COMPATIBLE, row("fk_child", "fk_child_p_fkey").verdict)
+        assertEquals(Verdict.COMPATIBLE, row("missing_t", "$schema.missing_t").verdict)
+        assertEquals(Verdict.BLOCKER, row("secret", "$schema.secret").verdict)
+        assertEquals(Verdict.COMPATIBLE, row("target_only", "$schema.target_only").verdict)
+        assertTrue(r.comparisons.none { it.verdict == Verdict.BLOCKER && r.findings.none { f -> f.severity == Severity.ERROR && f.table == it.table } })
+        assertTrue(r.overall.startsWith("BLOCKED: "), r.overall)
     }
 
     @Test
@@ -218,5 +236,9 @@ class DiffIntegrationTest {
         val tree = StateStore.json.readTree(text)
         assertNotNull(tree["tables"].firstOrNull { it["table"].asText() == "$schema.cols" })
         assertContains(tree["findings"].toString(), "safe widening")
+        // The UI reads the report back from this file.
+        val back = StateStore.json.readValue(text, DiffReport::class.java)
+        assertEquals(differ.run().comparisons.size, back.comparisons.size)
+        assertTrue(back.comparisons.any { it.verdict == Verdict.BLOCKER })
     }
 }

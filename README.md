@@ -35,7 +35,19 @@ You can also run `app.dc8.pumplet.onegin.ui.MainKt` from IntelliJ IDEA.
   `pumplet-onegin run --config ~/.config/pumplet-onegin/profiles/<name>/job.yaml`.
 - **On start:** the app lists the profiles and validates each one *offline*, the same way the
   CLI loads a job. Nothing connects to a database until you press a button.
-- **Layout:** the profile list is on the left. On the right, under the command toolbar, the **Profile** tab has the form and the **Output** tab shows command output. Starting a command switches to Output.
+- **Layout:** a narrow rail on the far left switches between **Profiles** and **Jobs**. The Jobs
+  icon shows how many jobs are running.
+  - **Profiles:** the profile list, then the selected profile's command toolbar and form.
+  - **Jobs:** every command started from a profile is a separate job. The list shows each job's
+    command, profile, start time, duration and status (*running*, *succeeded*, *blocked*,
+    *failed* or *stopped*). Starting a command opens its job. A job's page shows how it ran, the
+    command line and its output, with *Stop* while it runs and *Run again* afterwards.
+  - **Diff jobs:** a diff job opens on its **Diff report**, a table read from the
+    `job.diff.json` the job wrote. Each compared object (table, column, constraint, index) is a
+    row with its source and target definition and a status: *same*, *compatible* (differs, but
+    the copy handles it) or *BLOCKER*. The reason is shown under the row, and the overall result
+    is at the top. By default only the differences are shown; *Show identical objects too* lists
+    everything. *Output* switches to the command's text output.
 - **Editing:** a form holds the connections (passwords masked), the schemas and the
   include/exclude filters. Tuning, the load options, *Raise sequences* and the state table are
   under *Advanced settings*. When any of them differ from the defaults, the link says which. *Save* writes both files and shows any problems.
@@ -44,7 +56,7 @@ You can also run `app.dc8.pumplet.onegin.ui.MainKt` from IntelliJ IDEA.
   *Validate*, *Disable*, *Copy*, *Enable*, *Enable, skip pending*, *Recover* and *Status (all
   jobs)* are under *More*. Commands that write to the target ask first and name the target URL.
   Commands run the real CLI in-process on a background thread, and the output pane shows exactly
-  what the terminal would. A copy prints a progress line every 2 seconds. *Stop* works like
+  what the terminal would. Jobs are kept while the window is open; *Clear finished* removes them. A copy prints a progress line every 2 seconds. *Stop* works like
   Ctrl-C: in-flight chunks roll back, and running the command again resumes. One command runs at
   a time.
 
@@ -183,6 +195,20 @@ tables: 3 selected (1 skip, 2 blocked)
   shop.orders    BLOCKED created_at: extra NOT NULL column without default in target: every insert would fail
   shop.payments  BLOCKED amount: type text in source, numeric(12,2) in target; set diff.allowTypeDifferences: true to copy it as text anyway
 
+differences:
+  overall: BLOCKED: 2 blocker(s), 7 compatible difference(s)
+  Object                                Kind         Source                                    Target                                    Status
+  ------------------------------------  -----------  ----------------------------------------  ----------------------------------------  ----------
+  shop.legacy                           table        table, ~0 rows                            -                                         compatible
+  shop.orders.note                      column       character varying(40)                     character varying(200)                    compatible
+  shop.orders.total                     column       numeric(10,2)                             numeric(12,2)                             compatible
+  shop.orders.status                    column       text                                      text not null                             compatible
+  shop.orders.created_at                column       -                                         timestamp with time zone not null         BLOCKER
+  shop.orders.orders_cust_ix            index        -                                         CREATE INDEX ON shop.orders USING btree…  compatible
+  shop.orders.orders_customer_idx       index        CREATE INDEX ON shop.orders USING btree…  -                                         compatible
+  shop.payments.amount                  column       text                                      numeric(12,2)                             BLOCKER
+  shop.payments.payments_order_id_fkey  foreign key  FOREIGN KEY (order_id) REFERENCES shop.…  -                                         compatible
+
 findings:
   ERROR    shop.orders.created_at: extra NOT NULL column without default in target: every insert would fail
   ERROR    shop.payments.amount: type text in source, numeric(12,2) in target; set diff.allowTypeDifferences: true to copy it as text anyway
@@ -196,6 +222,13 @@ findings:
 report written to /home/me/jobs/shop.diff.json
 diff found 2 blocking error(s) and 5 warning(s)
 ```
+
+The **differences** table lists every compared object that differs: tables, columns,
+constraints and indexes. Each row has its source and target definition and a status: *compatible*
+(the copy handles it) or *BLOCKER*. The **findings** below the table explain each one.
+`--verbose` lists identical objects in the table as well. The table is also written to the log,
+and the JSON report holds every row (`comparisons`), which is what the desktop UI's diff report
+shows.
 
 Each table ends up with one action:
 

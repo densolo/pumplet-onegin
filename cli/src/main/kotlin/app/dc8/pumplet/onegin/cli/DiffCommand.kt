@@ -3,6 +3,7 @@ package app.dc8.pumplet.onegin.cli
 import app.dc8.pumplet.onegin.config.ConfigLoader
 import app.dc8.pumplet.onegin.config.JobConfig
 import app.dc8.pumplet.onegin.schema.DiffReport
+import app.dc8.pumplet.onegin.schema.DiffTable
 import app.dc8.pumplet.onegin.schema.Differ
 import app.dc8.pumplet.onegin.schema.Severity
 import app.dc8.pumplet.onegin.schema.TableAction
@@ -55,6 +56,12 @@ class DiffCommand(io: Io, loader: ConfigLoader) : JobCommand("diff", io, loader)
                 out.println("    ${" ".repeat(w)}  columns: ${t.columns.joinToString(", ") { it.name }}")
             }
         }
+
+        val table = DiffTable.format(r, all = verbose)
+        out.println()
+        out.println(if (verbose) "objects:" else "differences:")
+        table.lines().forEach { out.println("  $it") }
+        log.info("diff {}:\n{}", if (verbose) "objects" else "differences", table)
 
         val shown = r.findings.filter { verbose || it.severity != Severity.INFO }
         if (shown.isNotEmpty()) {

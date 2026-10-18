@@ -50,6 +50,26 @@ data class TablePlan(
     val largeObjects get() = columns.any { it.largeObject }
 }
 
+/** SAME: identical (maybe with a note); COMPATIBLE: differs, but the copy handles it; BLOCKER: must be fixed first. */
+enum class Verdict { SAME, COMPATIBLE, BLOCKER }
+
+/**
+ * One compared object: a schema, table, column, constraint or index, as the source and
+ * the target have it (null where it doesn't exist). [note] carries the findings about it.
+ */
+data class Comparison(
+    val table: String,
+    val kind: String,
+    val name: String,
+    val source: String?,
+    val target: String?,
+    val verdict: Verdict,
+    val note: String? = null,
+) {
+    /** `schema.table` for tables and schemas, `schema.table.object` for the rest. */
+    val objectName get() = if (kind == "table" || kind == "schema") name else "$table.$name"
+}
+
 data class DiffReport(
     val createdAt: Instant,
     val configHash: String,
@@ -59,11 +79,26 @@ data class DiffReport(
     /** Target tables in the copied schemas with no source counterpart; left alone. */
     val targetOnly: List<String>,
     val findings: List<Finding>,
+    /** Every compared object, identical ones included. */
+    val comparisons: List<Comparison> = emptyList(),
 ) {
     val errors get() = findings.count { it.severity == Severity.ERROR }
     val warnings get() = findings.count { it.severity == Severity.WARNING }
     val blocking get() = errors > 0
     fun table(name: String) = tables.firstOrNull { it.table == name }
+    val differences get() = comparisons.filter { it.verdict != Verdict.SAME }
+
+    /** "BLOCKED: 1 blocker, 5 compatible difference(s)", "OK: 3 compatible difference(s)" or "IDENTICAL". */
+    val overall: String
+        get() {
+            val blockers = comparisons.count { it.verdict == Verdict.BLOCKER }
+            val compatible = comparisons.count { it.verdict == Verdict.COMPATIBLE }
+            return when {
+                blocking -> "BLOCKED: ${maxOf(blockers, errors)} blocker(s), $compatible compatible difference(s)"
+                compatible > 0 -> "OK: $compatible compatible difference(s)"
+                else -> "IDENTICAL"
+            }
+        }
 }
 
 /**
@@ -82,9 +117,20 @@ class SchemaDiff(
         val findings = mutableListOf<Finding>()
         fun schemaError(schema: String, msg: String) = findings.add(Finding(Severity.ERROR, schema, null, msg))
 
-        schemas.filter { it !in source.schemas }.forEach { schemaError(it, "schema does not exist in source") }
-        schemas.filter { it in source.schemas && it !in target.schemas }
-            .forEach { schemaError(it, "schema does not exist in target (has the target schema been created, e.g. by Liquibase?)") }
+        val comparisons = mutableListOf<Comparison>()
+        for (schema in schemas) {
+            val inSource = schema in source.schemas
+            val inTarget = schema in target.schemas
+            when {
+                !inSource -> schemaError(schema, "schema does not exist in source")
+                !inTarget -> schemaError(schema, "schema does not exist in target (has the target schema been created, e.g. by Liquibase?)")
+            }
+            comparisons += Comparison(
+                schema, "schema", schema, if (inSource) "schema" else null, if (inTarget) "schema" else null,
+                if (inSource && inTarget) Verdict.SAME else Verdict.BLOCKER,
+                findings.filter { it.table == schema }.joinToString("; ") { it.message }.ifEmpty { null },
+            )
+        }
 
         fun selected(c: Catalog) = c.tables.values
             .filter { it.qualified != stateTable && filter.matches(it.schema, it.name) }
@@ -94,13 +140,18 @@ class SchemaDiff(
             val tableFindings = mutableListOf<Finding>()
             val plan = planTable(src, target, tableFindings)
             findings += tableFindings
+            comparisons += ComparisonRows(src, target.tables[src.qualified], tableFindings).rows()
             plan
         }
         val sourceNames = source.tables.keys
         val targetOnly = selected(target).map { it.qualified }.filter { it !in sourceNames && it.substringBefore('.') in schemas }
-        targetOnly.forEach { findings += Finding(Severity.INFO, it, null, "only in target: left as it is") }
+        targetOnly.forEach {
+            val note = "only in target: left as it is"
+            findings += Finding(Severity.INFO, it, null, note)
+            comparisons += Comparison(it, "table", it, null, "table", Verdict.COMPATIBLE, note)
+        }
 
-        return DiffReport(Instant.now(), configHash, sourceName, targetName, plans, targetOnly, findings)
+        return DiffReport(Instant.now(), configHash, sourceName, targetName, plans, targetOnly, findings, comparisons)
     }
 
     private fun planTable(src: Table, target: Catalog, out: MutableList<Finding>): TablePlan {
@@ -270,5 +321,59 @@ class SchemaDiff(
             }
             return false
         }
+    }
+}
+
+/**
+ * The comparison rows of one source table (and its target counterpart, if any). Verdicts
+ * come from the table's findings, so the rows and the findings always agree: an ERROR
+ * makes a BLOCKER, a different value or a WARNING makes COMPATIBLE, anything else SAME.
+ */
+private class ComparisonRows(private val src: Table, private val dst: Table?, private val findings: List<Finding>) {
+    private val t = src.qualified
+
+    fun rows(): List<Comparison> = buildList {
+        // A table row is about existence; its size is just shown.
+        add(row("table", t, null, "table, ~%,d rows".format(src.estRows.coerceAtLeast(0)), dst?.let { "table" }, same = dst != null))
+        if (dst == null) return@buildList
+        for (name in (src.columns.map { it.name } + dst.columns.map { it.name }).distinct()) {
+            add(row("column", name, name, src.column(name)?.let(::describe), dst.column(name)?.let(::describe)))
+        }
+        val srcCons = src.constraints.associateBy { it.name }
+        val dstCons = dst.constraints.associateBy { it.name }
+        for (name in (srcCons.keys + dstCons.keys).distinct().sorted()) {
+            val s = srcCons[name]
+            val d = dstCons[name]
+            add(row((s ?: d)!!.typeName, name, name, s?.definition, d?.definition))
+        }
+        val srcIdx = src.indexes.associateBy { it.name }
+        val dstIdx = dst.indexes.associateBy { it.name }
+        for (name in (srcIdx.keys + dstIdx.keys).distinct().sorted()) {
+            add(row("index", name, name, srcIdx[name]?.definition, dstIdx[name]?.definition))
+        }
+    }
+
+    private fun row(kind: String, name: String, subject: String?, source: String?, target: String?, same: Boolean = source == target): Comparison {
+        val about = findings.filter { it.subject == subject }
+        val verdict = when {
+            about.any { it.severity == Severity.ERROR } -> Verdict.BLOCKER
+            !same || about.any { it.severity == Severity.WARNING } -> Verdict.COMPATIBLE
+            else -> Verdict.SAME
+        }
+        val note = about.joinToString("; ") { it.message }.ifEmpty { null }
+            ?: if (source != null && target == null && kind != "column" && kind != "table") "not in target under this name" else null
+        return Comparison(t, kind, name, source, target, verdict, note)
+    }
+
+    /** "character varying(20) not null default 'x'", "integer generated always as identity", … */
+    private fun describe(c: Column) = buildString {
+        append(c.type)
+        if (c.notNull) append(" not null")
+        c.default?.let { append(" default $it") }
+        when (c.identity) {
+            'a' -> append(" generated always as identity")
+            'd' -> append(" generated by default as identity")
+        }
+        c.generated?.let { append(" generated always as ($it) stored") }
     }
 }

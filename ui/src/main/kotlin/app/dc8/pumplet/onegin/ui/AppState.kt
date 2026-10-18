@@ -2,10 +2,8 @@ package app.dc8.pumplet.onegin.ui
 
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshots.SnapshotStateList
 import javax.swing.SwingUtilities
 
 data class ProfileEntry(val name: String, val validation: Validation?, val loadError: String? = null)
@@ -32,10 +30,15 @@ enum class Command(val label: String, val args: List<String>, val writesTarget: 
     }
 }
 
-enum class PaneTab(val label: String) { PROFILE("Profile"), OUTPUT("Output") }
+/** The sections of the left rail. */
+enum class Screen(val label: String, val icon: String) {
+    PROFILES("Profiles", "☰"),
+    JOBS("Jobs", "▶"),
+}
 
 /** UI state; every mutation happens on the UI thread. */
 class AppState(val store: ProfileStore = ProfileStore()) {
+    var screen by mutableStateOf(Screen.PROFILES)
     var profiles by mutableStateOf(listOf<ProfileEntry>())
         private set
     var selected by mutableStateOf<String?>(null)
@@ -45,29 +48,30 @@ class AppState(val store: ProfileStore = ProfileStore()) {
     var saved by mutableStateOf<Profile?>(null)
         private set
     var message by mutableStateOf<String?>(null)
-    var running by mutableStateOf<Pair<String, Command>?>(null)
-        private set
     var pendingConfirm by mutableStateOf<Command?>(null)
     var confirmDelete by mutableStateOf(false)
-    var tab by mutableStateOf(PaneTab.PROFILE)
     var showAdvanced by mutableStateOf(false)
 
-    private val outputs = mutableStateMapOf<String, SnapshotStateList<OutputLine>>()
+    /** Every command run in this window, newest first. */
+    val jobs = mutableStateListOf<Job>()
+    var selectedJob by mutableStateOf<Job?>(null)
+    private var nextJobId = 1
 
     val dirty get() = draft != null && draft != saved
+    val runningJob: Job? get() = jobs.firstOrNull { it.status == JobStatus.RUNNING }
 
     private val runner = CommandRunner(
-        onLine = { profile, line -> SwingUtilities.invokeLater { output(profile).add(line) } },
-        onFinished = { profile, code ->
+        onLine = { key, line -> SwingUtilities.invokeLater { job(key)?.lines?.add(line) } },
+        onFinished = { key, code ->
+            val job = jobs.firstOrNull { it.key == key }
             SwingUtilities.invokeLater {
-                running = null
-                refresh(profile)
-                if (code == 130) message = "stopped; run the same command again to continue"
+                job?.finish(code)
+                job?.let { refresh(selected) }
             }
         },
     )
 
-    fun output(profile: String): SnapshotStateList<OutputLine> = outputs.getOrPut(profile) { mutableStateListOf() }
+    private fun job(key: String) = jobs.firstOrNull { it.key == key }
 
     /** Lists profiles and validates each offline; never connects. */
     fun refresh(keep: String? = selected) {
@@ -89,7 +93,6 @@ class AppState(val store: ProfileStore = ProfileStore()) {
     }
 
     fun newProfile() {
-        tab = PaneTab.PROFILE
         val p = Profile(name = store.freeName("new-job"))
         selected = null
         saved = null
@@ -98,7 +101,6 @@ class AppState(val store: ProfileStore = ProfileStore()) {
 
     fun duplicate() {
         val d = draft ?: return
-        tab = PaneTab.PROFILE
         selected = null
         saved = null
         draft = d.copy(name = store.freeName(d.name + "-copy"))
@@ -126,7 +128,6 @@ class AppState(val store: ProfileStore = ProfileStore()) {
     fun delete() {
         val name = selected ?: return
         store.delete(name)
-        outputs.remove(name)
         selected = null
         saved = null
         draft = null
@@ -145,19 +146,47 @@ class AppState(val store: ProfileStore = ProfileStore()) {
             message = "save the profile first"
             return
         }
-        val args = command.args + listOf("--config", store.jobFile(name).toString())
-        if (runner.start(name, args)) {
-            running = name to command
-            tab = PaneTab.OUTPUT
-        } else {
-            message = "another command is still running"
+        start(name, command)
+    }
+
+    /** Runs [command] again for [job]'s profile (asking first if it writes to the target). */
+    fun rerun(job: Job) {
+        if (!store.exists(job.profile)) {
+            message = "profile ${job.profile} no longer exists"
+            return
         }
+        if (job.command.writesTarget) {
+            select(job.profile)
+            pendingConfirm = job.command
+        } else {
+            start(job.profile, job.command)
+        }
+    }
+
+    /** Starts a job and shows it on the Jobs screen. */
+    private fun start(profile: String, command: Command) {
+        val jobFile = store.jobFile(profile)
+        val job = Job(nextJobId, profile, command, command.args + listOf("--config", jobFile.toString()), jobFile)
+        if (runningJob != null) {
+            message = "another command is still running"
+            return
+        }
+        nextJobId++
+        jobs.add(0, job)
+        if (!runner.start(job.key, job.args)) {
+            jobs.remove(job)
+            message = "another command is still running"
+            return
+        }
+        selectedJob = job
+        screen = Screen.JOBS
     }
 
     fun stop() = runner.stop()
 
-    fun clearOutput() {
-        selected?.let { output(it).clear() }
+    fun clearFinishedJobs() {
+        jobs.removeAll { it.status != JobStatus.RUNNING }
+        if (selectedJob !in jobs) selectedJob = jobs.firstOrNull()
     }
 
     fun validationOf(name: String?) = profiles.firstOrNull { it.name == name }?.validation

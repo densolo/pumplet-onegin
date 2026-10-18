@@ -84,7 +84,10 @@ class EndToEndTest {
         assertContains(out, "INFO     shop.document: large-object column(s) body")
         assertContains(out, "shop.measurement  COPY    4 columns, ~300,000 rows, 15 chunks")
         assertContains(out, "shop.emp          COPY    4 columns, ~5,000 rows, text format")
-        assertFalse(out.contains("shop.product.total"), "generated on both sides: just not copied")
+        // Generated on both sides: no finding, just not copied; the object table lists it as the same.
+        assertFalse(out.substringAfter("findings:").contains("shop.product.total"))
+        Regex("""shop\.product\.total +column .*same""").find(out) ?: error("generated column row missing:\n$out")
+        assertContains(out, "overall: BLOCKED: 1 blocker(s)")
         assertContains(out, "diff found 1 blocking error(s)")
         assertTrue(Files.exists(dir.resolve("e2e.diff.json")))
     }
